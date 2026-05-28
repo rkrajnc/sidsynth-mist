@@ -1,0 +1,171 @@
+# SIDsynth - Quartus II 13.0sp1 settings for the MiST board
+# Adapted from reference/minimig-mist-master/fpga/mist/minimig_mist.qsf
+
+
+#### device & toolchain ####
+set_global_assignment -name FAMILY "Cyclone III"
+set_global_assignment -name DEVICE EP3C25E144C8
+set_global_assignment -name TOP_LEVEL_ENTITY sidsynth_top
+set_global_assignment -name ORIGINAL_QUARTUS_VERSION "13.0 SP1"
+set_global_assignment -name LAST_QUARTUS_VERSION 13.1
+set_global_assignment -name DEVICE_FILTER_PIN_COUNT 144
+set_global_assignment -name POWER_PRESET_COOLING_SOLUTION "NO HEAT SINK WITH STILL AIR"
+set_global_assignment -name POWER_BOARD_THERMAL_MODEL "NONE (CONSERVATIVE)"
+set_global_assignment -name STRATIX_CONFIGURATION_DEVICE EPCS4
+set_global_assignment -name CYCLONEII_RESERVE_NCEO_AFTER_CONFIGURATION "USE AS REGULAR IO"
+set_global_assignment -name RESERVE_ASDO_AFTER_CONFIGURATION "AS INPUT TRI-STATED"
+set_global_assignment -name RESERVE_DATA0_AFTER_CONFIGURATION "USE AS REGULAR IO"
+set_global_assignment -name RESERVE_DATA1_AFTER_CONFIGURATION "USE AS REGULAR IO"
+set_global_assignment -name RESERVE_FLASH_NCE_AFTER_CONFIGURATION "USE AS REGULAR IO"
+set_global_assignment -name RESERVE_DCLK_AFTER_CONFIGURATION "USE AS REGULAR IO"
+set_global_assignment -name CYCLONEIII_CONFIGURATION_SCHEME "PASSIVE SERIAL"
+set_global_assignment -name GENERATE_RBF_FILE ON
+set_global_assignment -name FORCE_CONFIGURATION_VCCIO ON
+set_global_assignment -name STRATIX_DEVICE_IO_STANDARD "3.3-V LVTTL"
+
+
+#### synthesis & fitter ####
+set_global_assignment -name OPTIMIZE_HOLD_TIMING "ALL PATHS"
+set_global_assignment -name OPTIMIZE_MULTI_CORNER_TIMING ON
+set_global_assignment -name FITTER_EFFORT "AUTO FIT"
+set_global_assignment -name CYCLONEII_OPTIMIZATION_TECHNIQUE BALANCED
+set_global_assignment -name SMART_RECOMPILE ON
+set_global_assignment -name SYNTH_TIMING_DRIVEN_SYNTHESIS ON
+set_global_assignment -name AUTO_RAM_RECOGNITION ON
+set_global_assignment -name AUTO_ROM_RECOGNITION ON
+# Physical-synthesis options. These were OFF during native Quartus 13.0sp1
+# bring-up because they were inherited from minimig-mist production tuning
+# and hung the fitter on the initial sid_core integration build. Quartus
+# 13.1 inside Docker handles them cleanly, and we need COMBO_LOGIC +
+# REGISTER_RETIMING + OPTIMIZE_MULTI_CORNER_TIMING (above) to close the
+# slow-corner timing on the sid_filter signed-multiply paths after the
+# dc_blocker integration grew the design ~5% (3940 -> 4001 LE).
+# REGISTER_DUPLICATION and ASYNCHRONOUS_SIGNAL_PIPELINING stay OFF -- not
+# needed for current closure, and they expand the register count more.
+set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC ON
+set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION OFF
+set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING ON
+set_global_assignment -name PHYSICAL_SYNTHESIS_EFFORT NORMAL
+set_global_assignment -name PHYSICAL_SYNTHESIS_ASYNCHRONOUS_SIGNAL_PIPELINING OFF
+set_global_assignment -name PLACEMENT_EFFORT_MULTIPLIER 1.0
+set_global_assignment -name ROUTER_EFFORT_MULTIPLIER 1.0
+set_global_assignment -name MIN_CORE_JUNCTION_TEMP 0
+set_global_assignment -name MAX_CORE_JUNCTION_TEMP 85
+set_global_assignment -name USE_CONFIGURATION_DEVICE ON
+set_global_assignment -name ENABLE_SIGNALTAP OFF
+set_global_assignment -name PROJECT_OUTPUT_DIRECTORY build
+
+
+#### pin assignments ####
+# clocks
+set_location_assignment PIN_54  -to CLOCK_27[0]
+set_location_assignment PIN_55  -to CLOCK_27[1]
+set_location_assignment PIN_128 -to CLOCK_32[0]
+set_location_assignment PIN_129 -to CLOCK_32[1]
+set_location_assignment PIN_22  -to CLOCK_50[0]
+set_location_assignment PIN_23  -to CLOCK_50[1]
+
+# LED
+set_location_assignment PIN_7   -to LED
+
+# UART (carries MIDI IN on UART_RX through the MiST opto-isolator)
+set_location_assignment PIN_46  -to UART_TX
+set_location_assignment PIN_31  -to UART_RX
+
+# VGA (declared but unused in v1)
+set_location_assignment PIN_144 -to VGA_R[5]
+set_location_assignment PIN_143 -to VGA_R[4]
+set_location_assignment PIN_142 -to VGA_R[3]
+set_location_assignment PIN_141 -to VGA_R[2]
+set_location_assignment PIN_137 -to VGA_R[1]
+set_location_assignment PIN_135 -to VGA_R[0]
+set_location_assignment PIN_114 -to VGA_G[5]
+set_location_assignment PIN_113 -to VGA_G[4]
+set_location_assignment PIN_112 -to VGA_G[3]
+set_location_assignment PIN_111 -to VGA_G[2]
+set_location_assignment PIN_110 -to VGA_G[1]
+set_location_assignment PIN_106 -to VGA_G[0]
+set_location_assignment PIN_133 -to VGA_B[5]
+set_location_assignment PIN_132 -to VGA_B[4]
+set_location_assignment PIN_125 -to VGA_B[3]
+set_location_assignment PIN_121 -to VGA_B[2]
+set_location_assignment PIN_120 -to VGA_B[1]
+set_location_assignment PIN_115 -to VGA_B[0]
+set_location_assignment PIN_136 -to VGA_VS
+set_location_assignment PIN_119 -to VGA_HS
+
+# audio (1-bit sigma-delta into external RC)
+set_location_assignment PIN_65  -to AUDIO_L
+set_location_assignment PIN_80  -to AUDIO_R
+# Bump drive strength on the audio pins to max 3.3-V LVTTL on Cyclone III
+# (= 8 mA -- LVTTL on this family doesn't support 12/16/24 mA) plus fast
+# slew. The MiST 560-ohm first-stage LPF draws ~5.9 mA worst-case at PDM
+# transitions; if Quartus default was the lower 4 mA option, the pin
+# couldn't swing fully and the output would be reduced + asymmetric. 8 mA
+# + fast slew is the maximum Cyclone III lets us do here without changing
+# the I/O standard.
+set_instance_assignment -name CURRENT_STRENGTH_NEW "8MA" -to AUDIO_L
+set_instance_assignment -name CURRENT_STRENGTH_NEW "8MA" -to AUDIO_R
+set_instance_assignment -name SLEW_RATE 2 -to AUDIO_L
+set_instance_assignment -name SLEW_RATE 2 -to AUDIO_R
+
+# SPI (to MiST ARM uC; declared but unused in v1)
+set_location_assignment PIN_105 -to SPI_DO
+set_location_assignment PIN_88  -to SPI_DI
+set_location_assignment PIN_126 -to SPI_SCK
+set_location_assignment PIN_127 -to SPI_SS2
+set_location_assignment PIN_91  -to SPI_SS3
+set_location_assignment PIN_90  -to SPI_SS4
+set_location_assignment PIN_13  -to CONF_DATA0
+
+# SDRAM (declared but unused in v1)
+set_location_assignment PIN_49  -to SDRAM_A[0]
+set_location_assignment PIN_44  -to SDRAM_A[1]
+set_location_assignment PIN_42  -to SDRAM_A[2]
+set_location_assignment PIN_39  -to SDRAM_A[3]
+set_location_assignment PIN_4   -to SDRAM_A[4]
+set_location_assignment PIN_6   -to SDRAM_A[5]
+set_location_assignment PIN_8   -to SDRAM_A[6]
+set_location_assignment PIN_10  -to SDRAM_A[7]
+set_location_assignment PIN_11  -to SDRAM_A[8]
+set_location_assignment PIN_28  -to SDRAM_A[9]
+set_location_assignment PIN_50  -to SDRAM_A[10]
+set_location_assignment PIN_30  -to SDRAM_A[11]
+set_location_assignment PIN_32  -to SDRAM_A[12]
+set_location_assignment PIN_83  -to SDRAM_DQ[0]
+set_location_assignment PIN_79  -to SDRAM_DQ[1]
+set_location_assignment PIN_77  -to SDRAM_DQ[2]
+set_location_assignment PIN_76  -to SDRAM_DQ[3]
+set_location_assignment PIN_72  -to SDRAM_DQ[4]
+set_location_assignment PIN_71  -to SDRAM_DQ[5]
+set_location_assignment PIN_69  -to SDRAM_DQ[6]
+set_location_assignment PIN_68  -to SDRAM_DQ[7]
+set_location_assignment PIN_86  -to SDRAM_DQ[8]
+set_location_assignment PIN_87  -to SDRAM_DQ[9]
+set_location_assignment PIN_98  -to SDRAM_DQ[10]
+set_location_assignment PIN_99  -to SDRAM_DQ[11]
+set_location_assignment PIN_100 -to SDRAM_DQ[12]
+set_location_assignment PIN_101 -to SDRAM_DQ[13]
+set_location_assignment PIN_103 -to SDRAM_DQ[14]
+set_location_assignment PIN_104 -to SDRAM_DQ[15]
+set_location_assignment PIN_58  -to SDRAM_BA[0]
+set_location_assignment PIN_51  -to SDRAM_BA[1]
+set_location_assignment PIN_85  -to SDRAM_DQMH
+set_location_assignment PIN_67  -to SDRAM_DQML
+set_location_assignment PIN_60  -to SDRAM_nRAS
+set_location_assignment PIN_64  -to SDRAM_nCAS
+set_location_assignment PIN_66  -to SDRAM_nWE
+set_location_assignment PIN_59  -to SDRAM_nCS
+set_location_assignment PIN_33  -to SDRAM_CKE
+set_location_assignment PIN_43  -to SDRAM_CLK
+
+
+#### source files ####
+# All HDL sources + search paths live in sidsynth_mist.qip (paths there are
+# resolved relative to the .qip via $::quartus(qip_path), i.e. relative to
+# fpga/). Edit that file to add/remove sources.
+set_global_assignment -name QIP_FILE sidsynth_mist.qip
+
+
+#### timing constraints ####
+set_global_assignment -name SDC_FILE sidsynth_mist.sdc

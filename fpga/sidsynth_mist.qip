@@ -1,0 +1,26 @@
+# SIDsynth - release source list (hand-coded Quartus IP file)
+
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "pll.v"]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) "../rtl/sidsynth_top.sv"]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "../rtl/sid_driver.v"]
+# SID core (MiSTer reSID-style; SV consumed directly by Quartus 13.1)
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) "../rtl/sid_dac.sv"]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) "../rtl/sid_envelope.sv"]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) "../rtl/sid_voice.sv"]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) "../rtl/sid_tables.sv"]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) "../rtl/sid_filter.sv"]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) "../rtl/sid_top.sv"]
+# sigma-delta DAC + DC blocker (SV)
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) "../rtl/sdm.sv"]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) "../rtl/dc_blocker.sv"]
+# MIDI front-end (sv2v-lowered: packages/structs inlined into plain Verilog)
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "../rtl/uart_simple.v"]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "../rtl/midi_parser.v"]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "../rtl/ch_msg_router.v"]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "../rtl/voice_ctrl.v"]
+# .sidraw playback path
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "../rtl/sidraw_player.v"]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "../rtl/sidraw_rom.v"]
+# search paths: ../rtl for any `include, ../hex for $readmemh data
+set_global_assignment -name SEARCH_PATH [file join $::quartus(qip_path) "../rtl"]
+set_global_assignment -name SEARCH_PATH [file join $::quartus(qip_path) "../hex"]

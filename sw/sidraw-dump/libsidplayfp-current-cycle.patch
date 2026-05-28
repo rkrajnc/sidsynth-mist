@@ -1,0 +1,47 @@
+Add a sidplayfp::currentCycle() accessor that exposes the underlying
+EventScheduler PHI1 time. SIDsynth uses this to give register-write
+captures cycle-accurate timestamps, eliminating the event-vs-cycle
+drift that the play()-and-poll approach otherwise has.
+---
+--- a/src/sidplayfp/sidplayfp.h	2026-05-25 21:51:17.300500116 +0200
++++ src/sidplayfp/sidplayfp.h	2026-05-25 21:51:17.302790876 +0200
+@@ -236,6 +236,14 @@
+      * @since 3.0
+      */
+     int getBufSize(unsigned int cycles);
++
++    /**
++     * Get the current playing time measured in C64 CPU cycles since
++     * playback started. Added for SIDsynth's sidraw-dump tool to
++     * timestamp captured register writes with cycle precision.
++     * Non-const because the underlying EventScheduler getter isn't const.
++     */
++    uint_least64_t currentCycle();
+ };
+ 
+ #endif // SIDPLAYFP_H
+--- a/src/sidplayfp/sidplayfp.cpp	2026-05-25 21:51:17.301128737 +0200
++++ src/sidplayfp/sidplayfp.cpp	2026-05-25 21:51:17.302967419 +0200
+@@ -146,3 +146,8 @@
+ {
+     return sidplayer.getBufSize(cycles);
+ }
++
++uint_least64_t sidplayfp::currentCycle()
++{
++    return sidplayer.currentCycle();
++}
+--- a/src/player.h	2026-05-25 21:51:17.301957412 +0200
++++ src/player.h	2026-05-25 21:51:17.304384813 +0200
+@@ -167,6 +167,11 @@
+     bool reset();
+ 
+     int getBufSize(unsigned int cycles);
++
++    uint_least64_t currentCycle()
++    {
++        return static_cast<uint_least64_t>(m_c64.getEventScheduler()->getTime(EVENT_CLOCK_PHI1));
++    }
+ };
+ 
+ }

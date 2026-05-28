@@ -1,0 +1,6 @@
+QUARTUS_VERSION = "13.0"
+DATE = "2026-05-21"
+
+# Revisions
+
+PROJECT_REVISION = "sidsynth_mist"
