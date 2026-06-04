@@ -9,22 +9,21 @@ project and driven two ways at once:
 - **MIDI synth** — MIDI notes arrive on the board's serial input (via
   opto-isolator), are parsed and voice-allocated in hardware, and play
   through a SID core in real time.
-- **`.sidraw` playback** — a second SID core plays a tune baked into
-  on-chip BRAM from a `.sidraw` register dump, in parallel with the live
-  MIDI synth.
+- **`.sidraw` playback** — a second SID core plays a tune streamed from
+  the SD card as a `.sidraw` register dump, picked from an on-screen OSD
+  menu, in parallel with the live MIDI synth.
 
 
 ## Status
 
 This build is an early bring-up. What works today:
 
-- a baked-in SID melody played from BRAM by the `.sidraw` player;
+- `.sidraw` tunes streamed from the SD card, selected via an OSD menu;
 - a **monophonic** MIDI synth — one SID voice, last-note priority;
 - no MIDI CC handling (note on/off and pitch only).
 
 Short-term goals:
 
-- read `.sidraw` files from the SD card instead of baking one into BRAM;
 - **polyphonic** voice allocation across the SID's voices;
 - MIDI CC controls (filter, envelope, and other SID parameters).
 
@@ -32,9 +31,10 @@ Short-term goals:
 ## Layout
 
 ```
-rtl/    SID core, MIDI front-end, .sidraw player, DC blocker, SDM DAC, top
-fpga/   Quartus project (device, pins, PLL, SDC) + build.sh
-hex/    baked .sidraw tune (BRAM init for the player)
+rtl/    SID core, MIDI front-end, .sidraw player + SD reader, OSD/video,
+        DC blocker, SDM DAC, top
+fpga/   Quartus project (device, pins, PLLs, SDC) + build.sh
+hex/    legacy .sidraw BRAM init (unused in this build; SD streaming only)
 sw/     sidraw-dump host tools (.sid -> .sidraw -> .wav)
 ```
 
@@ -71,19 +71,27 @@ make -j
 ```
 
 
-## Bake a different tune
+## Play tunes from the SD card
 
-The player reads its tune from `hex/test_tune.hex`. To swap it:
+Tunes are loaded at runtime from the SD card — no rebuild needed. Convert a
+`.sid` to the `.sidraw` register-dump format with the host tools and copy it
+to a `SIDSYNTH` directory on the card:
 
 ```sh
 sidraw-dump your_tune.sid -o your_tune.sidraw
-python sw/sidraw_to_hex.py your_tune.sidraw hex/test_tune.hex
+cp your_tune.sidraw /path/to/sdcard/SIDSYNTH/
 ```
 
-then rebuild the FPGA core. Update `DEPTH`/`ADDR_WIDTH` on the `sidraw_rom`
-instance in `rtl/sidsynth_top.sv` if the new dump exceeds the current ROM
-size.
+With the card inserted, press **F12** on the MiST to open the OSD menu and
+pick a `.sidraw` file. `user_io` mounts the selection and `sidraw_sd_reader`
+streams it on demand through a small FIFO into the `.sidraw` player — so tune
+length is bounded by the SD card, not on-chip BRAM. Stock MiST firmware is
+used; no custom firmware is required.
 
+
+## Blog
+
+Read more about what I'm working on my [blog](https://somuch.guru/category/fpga/sidsynth/).
 
 ## License
 
