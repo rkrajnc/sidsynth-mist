@@ -26,8 +26,12 @@ derive_clock_uncertainty
 
 
 # group asynchronous domains
+#  - sys_clk (54 MHz, pll c0)
+#  - clk_pix (25.2 MHz VGA dot clock, pll_pix c0) -- async to sys_clk
+#  - spi_clk (ARM SPI link; user_io/osd cross into sys/pix internally)
 set_clock_groups -asynchronous \
-  -group [get_clocks {pll|altpll_component|auto_generated|pll1|clk[0]}] \
+  -group [get_clocks {pll_inst|altpll_component|auto_generated|pll1|clk[0]}] \
+  -group [get_clocks {pll_pix_inst|altpll_component|auto_generated|pll1|clk[0]}] \
   -group [get_clocks {spi_clk}]
 
 

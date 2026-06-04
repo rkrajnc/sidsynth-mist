@@ -1,7 +1,10 @@
-# SIDsynth - release source list (hand-coded Quartus IP file)
+# SIDsynth - source list
 
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "pll.v"]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "pll_pix.v"]
 set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) "../rtl/sidsynth_top.sv"]
+# SID register driver (note_lut.svh is `included from sid_driver.v; it rides
+# along into rel/rtl/ and is found via the ../rtl search path below)
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "../rtl/sid_driver.v"]
 # SID core (MiSTer reSID-style; SV consumed directly by Quartus 13.1)
 set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) "../rtl/sid_dac.sv"]
@@ -18,9 +21,17 @@ set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "../rtl
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "../rtl/midi_parser.v"]
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "../rtl/ch_msg_router.v"]
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "../rtl/voice_ctrl.v"]
-# .sidraw playback path
+# MiST glue: ARM SPI user_io (config string, OSD menu, SD file mount) + OSD
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "../rtl/user_io.v"]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "../rtl/osd.v"]
+# minimal 640x480 VGA background generator for the OSD overlay
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "../rtl/vga_ctrl.v"]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "../rtl/video_gen.v"]
+# .sidraw playback path: SD-streamed (user_io block reads -> FIFO -> parser
+# -> dedicated SID). Replaces the BRAM-baked sidraw_rom.
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "../rtl/sidraw_player.v"]
-set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "../rtl/sidraw_rom.v"]
-# search paths: ../rtl for any `include, ../hex for $readmemh data
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "../rtl/sidraw_fifo.v"]
+set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "../rtl/sidraw_sd_reader.v"]
+# search paths: ../rtl for any `include (e.g. note_lut.svh), ../hex for $readmemh
 set_global_assignment -name SEARCH_PATH [file join $::quartus(qip_path) "../rtl"]
 set_global_assignment -name SEARCH_PATH [file join $::quartus(qip_path) "../hex"]

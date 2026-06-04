@@ -48,13 +48,11 @@ module sidsynth_top (
 );
 
 
-//// unused IO (v1: MIDI in + audio out only) ////
+//// unused IO ////
+// SDRAM still unused (full-song buffering via SDRAM is a future step; the
+// SD path streams through a small on-chip FIFO instead). VGA + SPI are now
+// driven for the OSD menu / SD-file loader below.
 assign UART_TX    = 1'b1;            // MIDI/UART idle high
-assign VGA_HS     = 1'b0;
-assign VGA_VS     = 1'b0;
-assign VGA_R      = 6'b0;
-assign VGA_G      = 6'b0;
-assign VGA_B      = 6'b0;
 assign SDRAM_DQ   = 16'bzzzzzzzzzzzzzzzz;
 assign SDRAM_A    = 13'd0;
 assign SDRAM_DQML = 1'b0;
@@ -66,7 +64,6 @@ assign SDRAM_nCS  = 1'b1;            // disable SDRAM
 assign SDRAM_BA   = 2'b0;
 assign SDRAM_CLK  = 1'b0;
 assign SDRAM_CKE  = 1'b0;
-assign SPI_DO     = 1'bz;
 
 
 //// clock & reset ////
@@ -97,6 +94,94 @@ always @(posedge sys_clk or negedge pll_locked) begin
 end
 
 assign sys_rst_n = rst_sync[2];
+
+
+//// VGA pixel clock (separate PLL: 27 MHz -> 25.2 MHz) ////
+// Dedicated dot clock for the OSD menu video. 25.2 MHz with the 640x480
+// (800x525 total) timing in video_gen is a proper 60 Hz VGA mode. Kept
+// independent of the 54 MHz system PLL so the audio clocking is untouched.
+wire clk_pix;
+wire pix_locked;
+
+pll_pix pll_pix_inst (
+  .areset (1'b0),
+  .inclk0 (CLOCK_27[0]),
+  .c0     (clk_pix),
+  .locked (pix_locked)
+);
+
+// pixel-domain reset (sync release off pix_locked)
+reg  [3-1:0] pix_rst_sync;
+wire         pix_rst_n;
+
+always @(posedge clk_pix or negedge pix_locked) begin
+  if (!pix_locked) pix_rst_sync <= 3'd0;
+  else             pix_rst_sync <= {pix_rst_sync[1:0], 1'b1};
+end
+
+assign pix_rst_n = pix_rst_sync[2];
+
+
+//// MiST user_io: ARM SPI link (config string, OSD menu, SD file mount) ////
+// The stock MiST firmware reads CONF_STR to build the OSD menu and file
+// browser. Core name "SIDSYNTH" makes the firmware change into a /SIDSYNTH
+// directory on the SD card, so tunes are loaded from there. The 'S' entry
+// mounts the picked file as a block device; sidraw_sd_reader then streams
+// 512-byte sectors on demand. The 'O2' option drives status[2] = Stop.
+//
+// CONF_STR byte format follows menu-8bit.c parsing. The file-extension field
+// ('SID') and the exact mount-entry syntax should be confirmed on hardware
+// during bring-up (see modules/top/CLAUDE.md).
+localparam CONF_STR = "SIDSYNTH;;S0,SID,Load tune;O2,Playback,Play,Stop;T1,Restart;V,SIDSYNTH v2";
+
+wire [63:0] uio_status;
+wire        uio_sdo;          // user_io SPI MISO
+
+// SD block interface between user_io and sidraw_sd_reader
+wire [31:0] sd_lba;
+wire        sd_rd;
+wire        sd_ack;
+wire [ 7:0] sd_dout;
+wire        sd_dout_strobe;
+wire        img_mounted;
+wire [63:0] img_size;
+
+user_io #(
+  .STRLEN    ($bits(CONF_STR)/8),
+  .SD_IMAGES (1)
+) u_user_io (
+  .conf_str       (CONF_STR),
+  .conf_addr      (),
+  .conf_chr       (8'h00),
+  .clk_sys        (sys_clk),
+  .clk_sd         (sys_clk),
+  .SPI_CLK        (SPI_SCK),
+  .SPI_SS_IO      (CONF_DATA0),
+  .SPI_MISO       (uio_sdo),
+  .SPI_MOSI       (SPI_DI),
+  .status         (uio_status),
+  .buttons        (),
+  .sd_lba         (sd_lba),
+  .sd_rd          (sd_rd),
+  .sd_wr          (1'b0),
+  .sd_ack         (sd_ack),
+  .sd_conf        (1'b0),
+  .sd_sdhc        (1'b1),
+  .sd_dout        (sd_dout),
+  .sd_dout_strobe (sd_dout_strobe),
+  .sd_din         (8'h00),
+  .sd_din_strobe  (),
+  .sd_buff_addr   (),
+  .img_mounted    (img_mounted),
+  .img_size       (img_size)
+);
+
+// OSD "Stop playback" toggle (status bit 2)
+wire sidraw_stop = uio_status[2];
+
+// SPI readback: drive SPI_DO from user_io only when CONF_DATA0 selects it;
+// no other SPI slave on this core drives MISO (osd is input-only).
+assign SPI_DO = CONF_DATA0 ? 1'bz : uio_sdo;
 
 
 //// LED blinky ////
@@ -169,8 +254,8 @@ end
 
 
 //// clock-enable ////
-// single project-wide clk_en net, tied high;
-// routed through every module so we can swap in a gating
+// single project-wide clk_en net. Tied high in M1b-midi (no clock
+// gating yet); routed through every module so we can swap in a gating
 // source later without touching the instantiations.
 wire sys_clk_en = 1'b1;
 
@@ -377,41 +462,50 @@ sid_top #(
 );
 
 
-//// .sidraw playback path: ROM -> sidraw_player -> dedicated SID core ////
-// ROM -> player byte stream (vld/rdy handshake)
-wire [7:0] rom_byte_dat;
-wire       rom_byte_vld;
-wire       rom_byte_rdy;
+//// .sidraw playback path: SD -> sidraw_player -> dedicated SID core ////
+// sidraw_sd_reader streams the picked file off the SD card (via user_io
+// block reads) and feeds a sidraw_player, which drives a SECOND sid_top
+// instance via its own private SID register bus. Two SID cores let us
+// avoid mux RTL on the bus and let the MIDI chain keep responding to keys
+// while the .sidraw plays in parallel. Audio from both SIDs is summed
+// pre-dc_blocker (each >>>1 to fit 18 bits; the ~4 kLSB SID DC bias
+// survives the average unchanged).
 
-sidraw_rom #(
-  .MIF_FILE   ("test_tune.hex"),
-  .DEPTH      (31875),                // size of test_tune.sidraw (Monty 24s cycle)
-  .ADDR_WIDTH (15)                    // 2^15 = 32 KB ROM = 32 M9K blocks
-) u_sidraw_rom (
-  .clk      (sys_clk),
-  .rst_n    (sys_rst_n),
-  .byte_dat (rom_byte_dat),
-  .byte_vld (rom_byte_vld),
-  .byte_rdy (rom_byte_rdy)
+// SD reader -> player byte stream (vld/rdy handshake). Replaces the
+// BRAM-baked sidraw_rom: the file the user picks in the OSD menu is mounted
+// by the firmware and streamed sector-by-sector through a small FIFO. The
+// reader pulses `sidraw_start` when a file mounts; sidraw_player then waits
+// for bytes on the handshake (it stalls cleanly if the FIFO underruns).
+wire [7:0] sd_byte_dat;
+wire       sd_byte_vld;
+wire       sd_byte_rdy;
+wire       sidraw_start;
+
+sidraw_sd_reader #(
+  .FIFO_AW   (11),                    // 2 KB FIFO (2 M9K) -- ample headroom
+  .SECTOR_SZ (512)
+) u_sidraw_sd_reader (
+  .clk            (sys_clk),
+  .rst_n          (sys_rst_n),
+  .stop           (sidraw_stop),      // OSD "Stop": hold off new sector fetches
+  .start          (sidraw_start),
+  .busy           (),
+  .sd_lba         (sd_lba),
+  .sd_rd          (sd_rd),
+  .sd_ack         (sd_ack),
+  .sd_dout        (sd_dout),
+  .sd_dout_strobe (sd_dout_strobe),
+  .img_mounted    (img_mounted),
+  .img_size       (img_size),
+  .byte_dat       (sd_byte_dat),
+  .byte_vld       (sd_byte_vld),
+  .byte_rdy       (sd_byte_rdy)
 );
 
-// auto-start the player one cycle after reset deassertion; the player
-// runs to its 0xFF EOF then sits in IDLE. To replay, toggle sys_rst_n.
-reg sidraw_start;
-reg sidraw_started;
-always @(posedge sys_clk, negedge sys_rst_n) begin
-  if (!sys_rst_n) begin
-    sidraw_start   <= 1'b0;
-    sidraw_started <= 1'b0;
-  end else begin
-    if (!sidraw_started) begin
-      sidraw_start   <= 1'b1;
-      sidraw_started <= 1'b1;
-    end else begin
-      sidraw_start   <= 1'b0;
-    end
-  end
-end
+// Stop also freezes playback timing: gate the player's tick so the SID
+// envelopes/oscillators hold, and mute the player's audio branch so a held
+// note doesn't drone while stopped.
+wire player_ce_tick = ce_1m & ~sidraw_stop;
 
 // player -> dedicated SID register bus
 wire       p_cs;
@@ -422,14 +516,14 @@ wire [7:0] p_data;
 sidraw_player u_sidraw_player (
   .clk      (sys_clk),
   .rst_n    (sys_rst_n),
-  .ce_tick  (ce_1m),                 // cycle-accurate mode: 1 tick = 1 PAL CPU cycle
+  .ce_tick  (player_ce_tick),        // cycle-accurate mode; gated low while stopped
   .start    (sidraw_start),
   .busy     (),
   .done     (),
   .error    (),
-  .byte_dat (rom_byte_dat),
-  .byte_vld (rom_byte_vld),
-  .byte_rdy (rom_byte_rdy),
+  .byte_dat (sd_byte_dat),
+  .byte_vld (sd_byte_vld),
+  .byte_rdy (sd_byte_rdy),
   .sid_cs   (p_cs),
   .sid_we   (p_we),
   .sid_addr (p_addr),
@@ -479,8 +573,17 @@ sid_top #(
 // ~4000-LSB positive DC bias; the sum is sign-extended to 19 bits and
 // arithmetic-shifted right by 1, preserving sign and DC level. dc_blocker
 // downstream removes the bias before SDM.
-wire signed [18:0] sid_audio_sum   = sid_audio_l + sid_audio_l_player;
-wire signed [17:0] sid_audio_mixed = sid_audio_sum >>> 1;
+//
+// NOTE: this MUST be a signed add + arithmetic (>>>) shift. An unsigned
+// add / bit-slice misreads the sign bit when the combined SID output dips
+// below zero -- which happens when all three voices hit near-full envelope
+// simultaneously (a chord) with their pulses aligned low -- wrapping the
+// sample to near full scale. That produced the audible attack-onset click.
+// mute the .sidraw branch while stopped (player tick is frozen, so the SID
+// would otherwise hold its last waveform as a drone)
+wire signed [17:0] sid_audio_player_eff = sidraw_stop ? 18'sd0 : sid_audio_l_player;
+wire signed [18:0] sid_audio_sum        = sid_audio_l + sid_audio_player_eff;
+wire signed [17:0] sid_audio_mixed      = sid_audio_sum >>> 1;
 
 
 //// DC blocker between SID and SDM DAC ////
@@ -548,6 +651,60 @@ sdm #(
 
 assign AUDIO_L = sid_pdm;
 assign AUDIO_R = sid_pdm;
+
+
+//// VGA + OSD menu ////
+// video_gen makes a plain 640x480@60 background on the dedicated pixel
+// clock; osd.v overlays the MiST firmware menu (driven over SPI_SS3) onto
+// it. SIDsynth has no real video content -- this exists purely so the OSD
+// file browser is visible. Sync passes straight through; osd.v only tints
+// the RGB inside the menu box.
+wire [5:0] vid_r;
+wire [5:0] vid_g;
+wire [5:0] vid_b;
+wire       vid_hs;
+wire       vid_vs;
+wire       vid_hblank;
+wire       vid_vblank;
+
+video_gen u_video_gen (
+  .clk_pix    (clk_pix),
+  .rst_n      (pix_rst_n),
+  .vga_r      (vid_r),
+  .vga_g      (vid_g),
+  .vga_b      (vid_b),
+  .vga_hs     (vid_hs),
+  .vga_vs     (vid_vs),
+  .vga_hblank (vid_hblank),
+  .vga_vblank (vid_vblank)
+);
+
+osd #(
+  .OUT_COLOR_DEPTH (6),
+  .OSD_AUTO_CE     (1'b1),
+  .USE_BLANKS      (1'b0)
+) u_osd (
+  .clk_sys    (clk_pix),
+  .ce         (1'b1),
+  .SPI_SCK    (SPI_SCK),
+  .SPI_SS3    (SPI_SS3),
+  .SPI_DI     (SPI_DI),
+  .rotate     (2'b00),
+  .R_in       (vid_r),
+  .G_in       (vid_g),
+  .B_in       (vid_b),
+  .HBlank     (vid_hblank),
+  .VBlank     (vid_vblank),
+  .HSync      (vid_hs),
+  .VSync      (vid_vs),
+  .R_out      (VGA_R),
+  .G_out      (VGA_G),
+  .B_out      (VGA_B),
+  .osd_enable ()
+);
+
+assign VGA_HS = vid_hs;
+assign VGA_VS = vid_vs;
 
 
 endmodule
