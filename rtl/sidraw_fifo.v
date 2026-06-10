@@ -68,7 +68,13 @@ wire issue   = ram_ne & out_free;
 assign full   = (cnt == DEPTH[AW:0]);
 assign used   = cnt + (rdata_vld ? {{(AW){1'b0}}, 1'b1} : {(AW+1){1'b0}});
 assign rd_dat = rdata;
-assign rd_vld = rdata_vld;
+// Suppress the presented byte during a flush. The output register's valid is
+// cleared by the (registered) flush only on the next edge, so without this the
+// stale head byte stays visible for the flush cycle -- a consumer reading then
+// (e.g. sidraw_player's header read right after a remount) would splice one
+// stale byte into the new stream. Gate it combinationally so flush hides it
+// immediately.
+assign rd_vld = rdata_vld & ~flush;
 
 
 // write port (M9K)

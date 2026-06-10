@@ -114,18 +114,27 @@ always @(posedge clk, negedge rst_n) begin
     sid_cs <= 1'b0;
     sid_we <= 1'b0;
 
+    // A (re)start preempts playback from byte 0 regardless of state, so a
+    // newly mounted file cleanly cancels whatever is currently playing. The
+    // SD reader flushes its FIFO and pulses start on img_mounted, so the
+    // header is re-read from a fresh stream. done/error/sid_cs/sid_we keep
+    // their pulse defaults (low) this cycle -- no spurious write or EOF.
+    if (start) begin
+      state      <= ST_READ_HEADER;
+      hdr_cnt    <= 5'd0;
+      hdr_ok     <= 1'b1;
+      arg_idx    <= 3'd0;
+      arg_target <= 3'd0;
+      wait_r     <= 32'd0;
+      op_r       <= 8'd0;
+      busy       <= 1'b1;
+      byte_rdy   <= 1'b1;
+    end else begin
     case (state)
 
       ST_IDLE: begin
         busy     <= 1'b0;
         byte_rdy <= 1'b0;
-        if (start) begin
-          state    <= ST_READ_HEADER;
-          hdr_cnt  <= 5'd0;
-          hdr_ok   <= 1'b1;
-          busy     <= 1'b1;
-          byte_rdy <= 1'b1;
-        end
       end
 
       ST_READ_HEADER: begin
@@ -245,6 +254,7 @@ always @(posedge clk, negedge rst_n) begin
 
       default: state <= ST_IDLE;
     endcase
+    end
   end
 end
 

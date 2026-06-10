@@ -4,6 +4,8 @@
 // VCO frequency: 27 MHz * 12 = 324 MHz (within Cyclone III range)
 // c0:            VCO / 6 = 54 MHz
 //
+// 54 MHz is exactly 54x the SID ce_1m (1.000 MHz) -- no timing drift.
+//
 // Quartus II 13.0sp1 altpll megafunction; modelled on
 // reference/minimig-mist-master/rtl/clock/amiga_clk_altera.v.
 

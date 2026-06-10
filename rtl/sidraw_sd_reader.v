@@ -63,6 +63,7 @@ localparam [2:0] S_REQ      = 3'd1;  // decide whether to fetch the next sector
 localparam [2:0] S_WAIT_ACK = 3'd2;  // sd_rd asserted; wait for transfer to start
 localparam [2:0] S_RECV     = 3'd3;  // capturing the sector into the FIFO
 localparam [2:0] S_DRAIN    = 3'd4;  // all sectors fetched; FIFO drains to player
+localparam [2:0] S_REMOUNT  = 3'd5;  // after remount: drain any in-flight transfer
 
 reg  [ 2:0] state;
 reg  [31:0] n_sectors;               // ceil(img_size / SECTOR_SZ)
@@ -124,18 +125,25 @@ always @(posedge clk, negedge rst_n) begin
     fifo_flush <= 1'b0;
 
     // A (re)mount restarts playback from sector 0, regardless of state.
+    // Go via S_REMOUNT (not straight to S_REQ): if the remount preempted an
+    // in-flight sector transfer, the firmware is still serving it (sd_ack
+    // high). Re-issuing sd_rd now would make S_WAIT_ACK latch that lingering
+    // ack as ours and capture the old sector's tail as the new file's header
+    // -> player header error, new tune never plays. S_REMOUNT waits it out.
     if (img_mounted) begin
       n_sectors  <= n_sectors_calc;
       sec_idx    <= 32'd0;
       sd_rd      <= 1'b0;
       fifo_flush <= 1'b1;            // drop any stale bytes
       start      <= 1'b1;            // kick sidraw_player (it waits for bytes)
-      state      <= S_REQ;
+      state      <= S_REMOUNT;
     end else begin
       case (state)
 
         S_IDLE: begin
-          // wait for img_mounted (handled above)
+          // wait for img_mounted (handled above). A full-core reset (OSD
+          // "Restart") lands here and STAYS idle -- it is a reset to the initial
+          // state, not a replay: the user re-selects a file to start playback.
         end
 
         S_REQ: begin
@@ -173,6 +181,14 @@ always @(posedge clk, negedge rst_n) begin
         S_DRAIN: begin
           // no more sectors to fetch; player drains the FIFO and stops on
           // the .sidraw 0xFF EOF byte. A fresh img_mounted (above) restarts.
+        end
+
+        S_REMOUNT: begin
+          // wait for any preempted, in-flight sector transfer to fully end
+          // before requesting sector 0 of the freshly mounted file. Any
+          // sd_dout_strobe arriving here is the old sector's tail -- ignored
+          // (no fifo_wr in this state), and the FIFO was flushed on remount.
+          if (!sd_ack) state <= S_REQ;
         end
 
         default: state <= S_IDLE;

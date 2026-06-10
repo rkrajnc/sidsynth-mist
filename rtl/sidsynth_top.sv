@@ -85,12 +85,20 @@ pll pll_inst (
 reg  [3-1:0] rst_sync;
 wire         sys_rst_n;
 
+// OSD "Restart" (status[1]) requests a full reset of the whole sys_clk domain
+// -- a panic/recovery to the initial state (clears stuck notes, both SIDs,
+// filters, DC/SDM, the reader/player FSMs). user_io is NOT in this reset (it
+// free-runs on the SPI link), so the ARM link + OSD survive; playback does NOT
+// auto-resume -- the reader returns to idle and the user re-selects a file.
+// restart_req is synced off pll_locked, not sys_rst_n, since it DRIVES the
+// reset and must not be cleared by it. Driven in the "OSD playback control"
+// section once uio_status exists.
+wire         restart_req;
+
 always @(posedge sys_clk or negedge pll_locked) begin
-  if (!pll_locked) begin
-    rst_sync <= 4'd0;
-  end else begin
-    rst_sync <= {rst_sync[1:0], 1'b1};
-  end
+  if (!pll_locked)      rst_sync <= 3'd0;
+  else if (restart_req) rst_sync <= 3'd0;            // OSD Restart: re-run reset
+  else                  rst_sync <= {rst_sync[1:0], 1'b1};
 end
 
 assign sys_rst_n = rst_sync[2];
@@ -127,12 +135,24 @@ assign pix_rst_n = pix_rst_sync[2];
 // browser. Core name "SIDSYNTH" makes the firmware change into a /SIDSYNTH
 // directory on the SD card, so tunes are loaded from there. The 'S' entry
 // mounts the picked file as a block device; sidraw_sd_reader then streams
-// 512-byte sectors on demand. The 'O2' option drives status[2] = Stop.
+// 512-byte sectors on demand. 'T2,Toggle playing' and 'T1,Restart' are
+// momentary toggles: the firmware pulses status[2]/status[1] high-then-low,
+// and the FPGA acts on them (see "OSD playback control" + "reset" below):
+// T2 flips the internal play/stop state; T1 triggers a full reset of the
+// sys_clk domain (everything but user_io) -- a panic/recovery to the initial
+// state, NOT a replay (playback stays stopped until the user re-selects a
+// file). Using a momentary toggle (not a level 'O' option) lets the FPGA "do
+// the right thing" regardless of the firmware bit's absolute value.
+//
+// 'O3,SID model' is a persistent setting (not an action), so a level 'O'
+// option is the right tool: the firmware owns status[3] and the menu shows
+// the current value. status[3]=0 -> 6581 (default), 1 -> 8580; it drives the
+// `mode` input of BOTH SID cores (global select).
 //
 // CONF_STR byte format follows menu-8bit.c parsing. The file-extension field
 // ('SID') and the exact mount-entry syntax should be confirmed on hardware
 // during bring-up (see modules/top/CLAUDE.md).
-localparam CONF_STR = "SIDSYNTH;;S0,SID,Load tune;O2,Playback,Play,Stop;T1,Restart;V,SIDSYNTH v2";
+localparam CONF_STR = "SIDSYNTH;;S0,SID,Load tune;T2,Toggle playing;O3,SID model,6581,8580;T1,Restart;V,SIDSYNTH v_0_3";
 
 wire [63:0] uio_status;
 wire        uio_sdo;          // user_io SPI MISO
@@ -176,12 +196,82 @@ user_io #(
   .img_size       (img_size)
 );
 
-// OSD "Stop playback" toggle (status bit 2)
-wire sidraw_stop = uio_status[2];
+//// OSD playback control: "Toggle playing" + "Restart" ////
+// 'T' menu entries are momentary: the firmware pulses the status bit high
+// then immediately low (menu-8bit.c). status is set in the SPI domain, so
+//   status[2] = "Toggle playing" -> flip internal play/stop state
+//   status[1] = "Restart"        -> full core reset (driven via restart_req)
+//
+// Sync "Toggle playing" into sys_clk + rising-edge detect.
+reg [1:0] toggle_sync;
+reg       toggle_d;
+
+always @(posedge sys_clk, negedge sys_rst_n) begin
+  if (!sys_rst_n) begin
+    toggle_sync <= 2'b0;
+    toggle_d    <= 1'b0;
+  end else begin
+    toggle_sync <= {toggle_sync[0], uio_status[2]};
+    toggle_d    <= toggle_sync[1];
+  end
+end
+
+wire toggle_pulse = toggle_sync[1] & ~toggle_d;      // rising edge: Toggle playing
+
+// "Restart" (status[1]) -> full core reset (see reset section). Synced off
+// pll_locked, NOT sys_rst_n, so the core reset it drives can't reset the
+// synchroniser mid-pulse. Level-held for the firmware's toggle-pulse width,
+// then released through rst_sync.
+reg [2:0] restart_sync_r;
+always @(posedge sys_clk or negedge pll_locked) begin
+  if (!pll_locked) restart_sync_r <= 3'd0;
+  else             restart_sync_r <= {restart_sync_r[1:0], uio_status[1]};
+end
+assign restart_req = restart_sync_r[2];
+
+// play/stop state for the .sidraw branch. A new load (img_mounted) auto-plays;
+// "Toggle playing" flips it. sidraw_stop gates sector fetches (reader .stop),
+// freezes the player tick, and mutes the player audio branch (see uses below).
+reg playing;
+always @(posedge sys_clk, negedge sys_rst_n) begin
+  if (!sys_rst_n)        playing <= 1'b1;   // default: play once a tune loads
+  else if (img_mounted)  playing <= 1'b1;   // new .sidraw load: auto-play
+  else if (toggle_pulse) playing <= ~playing;
+end
+
+wire sidraw_stop = ~playing;
+
+// Playback-SID reset pulse. Asserted on every new .sidraw load (img_mounted)
+// so a freshly loaded tune begins from clean SID register state -- clears stuck
+// notes and any residual registers the previous tune left behind -- WITHOUT
+// disturbing the MIDI chain (a full reset would). Stretched a few cycles so
+// sid_top fully clears. (OSD "Restart" is the heavier hammer: a full core reset
+// via restart_req, which already resets this SID, so it isn't wired here.)
+reg [3:0] sidp_rst_cnt;
+reg       sidp_reset;
+always @(posedge sys_clk, negedge sys_rst_n) begin
+  if (!sys_rst_n) begin
+    sidp_rst_cnt <= 4'd0;
+    sidp_reset   <= 1'b1;
+  end else if (img_mounted) begin
+    sidp_rst_cnt <= 4'hf;
+    sidp_reset   <= 1'b1;
+  end else if (sidp_rst_cnt != 4'd0) begin
+    sidp_rst_cnt <= sidp_rst_cnt - 4'd1;
+    sidp_reset   <= 1'b1;
+  end else begin
+    sidp_reset   <= 1'b0;
+  end
+end
 
 // SPI readback: drive SPI_DO from user_io only when CONF_DATA0 selects it;
 // no other SPI slave on this core drives MISO (osd is input-only).
 assign SPI_DO = CONF_DATA0 ? 1'bz : uio_sdo;
+
+// OSD "SID model" select (status[3]): 0 = 6581 (default), 1 = 8580. Drives the
+// `mode` input of both SID cores globally. mode is a combinational select
+// inside sid_top (filter curve / waveform mixing), safe to change live.
+wire sid_model_8580 = uio_status[3];
 
 
 //// LED blinky ////
@@ -206,7 +296,9 @@ always @(posedge sys_clk, negedge sys_rst_n) begin
   end
 end
 
-assign LED = blinky_r;
+// LED is driven in the "SD diagnostic instrumentation" section below
+// (heartbeat while idle, solid once the player emits a SID write). When
+// DEBUG_SD=0 it falls back to the plain heartbeat.
 
 
 //// ce_1m strobe (54-cycle divider from sys_clk -> 1.000 MHz) ////
@@ -452,7 +544,7 @@ sid_top #(
   .audio_r     (),
 
   .filter_en   (1'b1),
-  .mode        (1'b0),          // 6581 model
+  .mode        (sid_model_8580),  // 0 = 6581, 1 = 8580 (OSD "SID model")
   .cfg         (2'b00),
 
   .ld_clk      (sys_clk),
@@ -512,6 +604,7 @@ wire       p_cs;
 wire       p_we;
 wire [4:0] p_addr;
 wire [7:0] p_data;
+wire       plr_error;        // diagnostic: player parse-error pulse (SD diag section)
 
 sidraw_player u_sidraw_player (
   .clk      (sys_clk),
@@ -520,7 +613,7 @@ sidraw_player u_sidraw_player (
   .start    (sidraw_start),
   .busy     (),
   .done     (),
-  .error    (),
+  .error    (plr_error),
   .byte_dat (sd_byte_dat),
   .byte_vld (sd_byte_vld),
   .byte_rdy (sd_byte_rdy),
@@ -537,7 +630,7 @@ sid_top #(
   .MULTI_FILTERS (1),
   .DUAL          (0)
 ) u_sid_player (
-  .reset       (~sys_rst_n),
+  .reset       (~sys_rst_n | sidp_reset),   // also reset on new load / OSD Restart
   .clk         (sys_clk),
   .ce_1m       (ce_1m),
 
@@ -560,7 +653,7 @@ sid_top #(
   .audio_r     (),
 
   .filter_en   (1'b1),
-  .mode        (1'b0),          // 6581 model
+  .mode        (sid_model_8580),  // 0 = 6581, 1 = 8580 (OSD "SID model")
   .cfg         (2'b00),
 
   .ld_clk      (sys_clk),
@@ -679,6 +772,126 @@ video_gen u_video_gen (
   .vga_vblank (vid_vblank)
 );
 
+
+//// SD diagnostic instrumentation ////
+// The .sidraw SD path has no on-board observability: when nothing comes out
+// of the speaker there's no way to tell whether the firmware mounted the file
+// at all, whether sectors are being served, or whether the player ever ran.
+// This block lights up the pipeline so it can be bisected on real hardware.
+//
+// Six sticky flags track how far a playback attempt got, in pipeline order:
+//   mounted  : user_io pulsed img_mounted             (firmware mount reached FPGA)
+//   sd_rd    : reader asserted sd_rd                   (a sector was requested)
+//   sd_data  : user_io strobed a sector byte           (firmware is serving data)
+//   fifo_byte: FIFO presented a byte to the player     (data crossed the FIFO)
+//   sid_write: player drove a SID register write        (parser ran -> audio)
+//   error    : player hit a bad header / opcode
+// All flags clear on every img_mounted, so each file selection restarts the
+// indicator from scratch.
+//
+// VGA: the background stays the normal dim blue until a mount reaches the
+// FPGA, then flips to a solid stage colour (priority-encoded, furthest stage
+// wins). Reading the colour after picking a file tells you where it stalled:
+//   (background unchanged) no mount      -> firmware/CONF_STR never mounted
+//   purple                 mounted only  -> reader never requested a sector
+//                                           (stop asserted? img_size -> 0 sectors?)
+//   cyan                   sd_rd, no data-> firmware not serving the read
+//   orange                 data, no fifo -> sd_dout capture / FIFO write issue
+//   yellow                 fifo, no write-> bytes reach player but no SID write
+//                                           (header rejected? parser stuck)
+//   green                  sid_write     -> end-to-end OK (should be audible)
+//   red                    error         -> player halted on bad header/opcode
+//
+// LED: 1 Hz heartbeat = FPGA alive; solid = player has emitted >=1 SID write.
+//
+// Set DEBUG_SD=0 to revert to the plain heartbeat LED and flat background.
+localparam DEBUG_SD = 1'b1;
+
+// sticky stage flags (sys_clk domain)
+reg dbg_mounted;
+reg dbg_sd_rd;
+reg dbg_sd_data;
+reg dbg_fifo;
+reg dbg_write;
+reg dbg_error;
+
+always @(posedge sys_clk, negedge sys_rst_n) begin
+  if (!sys_rst_n) begin
+    dbg_mounted <= 1'b0;
+    dbg_sd_rd   <= 1'b0;
+    dbg_sd_data <= 1'b0;
+    dbg_fifo    <= 1'b0;
+    dbg_write   <= 1'b0;
+    dbg_error   <= 1'b0;
+  end else if (img_mounted) begin
+    // fresh mount: restart the indicator for the newly picked file
+    dbg_mounted <= 1'b1;
+    dbg_sd_rd   <= 1'b0;
+    dbg_sd_data <= 1'b0;
+    dbg_fifo    <= 1'b0;
+    dbg_write   <= 1'b0;
+    dbg_error   <= 1'b0;
+  end else begin
+    if (sd_rd)          dbg_sd_rd   <= 1'b1;
+    if (sd_dout_strobe) dbg_sd_data <= 1'b1;
+    if (sd_byte_vld)    dbg_fifo    <= 1'b1;
+    if (p_cs & p_we)    dbg_write   <= 1'b1;
+    if (plr_error)      dbg_error   <= 1'b1;
+  end
+end
+
+// LED: heartbeat until the player writes a SID register, then solid on.
+assign LED = (DEBUG_SD && dbg_write) ? 1'b1 : blinky_r;
+
+// cross the (slow, sticky) flag bus into the pixel-clock domain. sys_clk and
+// clk_pix are already declared async (set_clock_groups in sidsynth_mist.sdc),
+// so this 2-FF synchroniser is a clean CDC -- no extra SDC needed.
+wire [5:0] dbg_bus = {dbg_error, dbg_write, dbg_fifo, dbg_sd_data, dbg_sd_rd, dbg_mounted};
+
+reg [5:0] dbg_sync0;
+reg [5:0] dbg_sync1;
+
+always @(posedge clk_pix, negedge pix_rst_n) begin
+  if (!pix_rst_n) begin
+    dbg_sync0 <= 6'd0;
+    dbg_sync1 <= 6'd0;
+  end else begin
+    dbg_sync0 <= dbg_bus;
+    dbg_sync1 <= dbg_sync0;
+  end
+end
+
+wire d_mounted = dbg_sync1[0];
+wire d_sd_rd   = dbg_sync1[1];
+wire d_sd_data = dbg_sync1[2];
+wire d_fifo    = dbg_sync1[3];
+wire d_write   = dbg_sync1[4];
+wire d_error   = dbg_sync1[5];
+
+// priority-encoded stage colour (furthest stage reached wins; error overrides)
+reg [5:0] dbg_r;
+reg [5:0] dbg_g;
+reg [5:0] dbg_b;
+
+always @* begin
+  if      (d_error)   begin dbg_r = 6'd63; dbg_g = 6'd0;  dbg_b = 6'd0;  end // red
+  else if (d_write)   begin dbg_r = 6'd0;  dbg_g = 6'd63; dbg_b = 6'd0;  end // green
+  else if (d_fifo)    begin dbg_r = 6'd63; dbg_g = 6'd63; dbg_b = 6'd0;  end // yellow
+  else if (d_sd_data) begin dbg_r = 6'd63; dbg_g = 6'd24; dbg_b = 6'd0;  end // orange
+  else if (d_sd_rd)   begin dbg_r = 6'd0;  dbg_g = 6'd48; dbg_b = 6'd48; end // cyan
+  else                begin dbg_r = 6'd40; dbg_g = 6'd0;  dbg_b = 6'd40; end // purple
+end
+
+// override the background with the stage colour only after a mount, and only
+// in the visible area (blanking stays black so osd's sync handling is intact).
+wire vid_active = ~vid_hblank;
+wire dbg_paint  = DEBUG_SD && d_mounted && vid_active;
+
+wire [5:0] osd_r_in = dbg_paint ? dbg_r : vid_r;
+wire [5:0] osd_g_in = dbg_paint ? dbg_g : vid_g;
+wire [5:0] osd_b_in = dbg_paint ? dbg_b : vid_b;
+
+
 osd #(
   .OUT_COLOR_DEPTH (6),
   .OSD_AUTO_CE     (1'b1),
@@ -690,9 +903,9 @@ osd #(
   .SPI_SS3    (SPI_SS3),
   .SPI_DI     (SPI_DI),
   .rotate     (2'b00),
-  .R_in       (vid_r),
-  .G_in       (vid_g),
-  .B_in       (vid_b),
+  .R_in       (osd_r_in),
+  .G_in       (osd_g_in),
+  .B_in       (osd_b_in),
   .HBlank     (vid_hblank),
   .VBlank     (vid_vblank),
   .HSync      (vid_hs),
