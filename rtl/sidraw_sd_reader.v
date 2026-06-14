@@ -1,25 +1,9 @@
 // sidraw_sd_reader.v
 // Streams a .sidraw file off the SD card (via the MiST user_io block
 // interface) into a small FIFO, presenting the bytes to sidraw_player on
-// the same vld/rdy handshake the BRAM-baked sidraw_rom used. This is the
-// runtime replacement for sidraw_rom: instead of a tune baked at synthesis
-// time, the ARM firmware mounts the file the user picked in the OSD menu
-// and serves 512-byte sectors on demand.
-//
-// Flow control is FPGA-paced: we only request the next sector once the FIFO
-// has room for a full 512 bytes, so an arbitrarily large file streams
-// through a fixed, tiny buffer without overflow. If the FIFO ever underruns
-// (SD latency), sidraw_player simply stalls on byte_rdy -- playback pauses,
-// no glitch.
-//
-// MiST user_io block read handshake (see reference/mist-modules-master/
-// user_io.v sd_block):
-//   1. core sets sd_lba, raises sd_rd; firmware notices via UIO_GET_SDSTAT
-//   2. firmware streams the sector: sd_ack high, then 512 sd_dout bytes each
-//      flagged by a 1-clk sd_dout_strobe pulse
-//   3. firmware ends the transfer: sd_ack falls
-// We run user_io's clk_sd == sys_clk, so sd_ack/sd_dout/sd_dout_strobe are
-// already in this clock domain -- no extra CDC here.
+// the same vld/rdy handshake the BRAM-baked sidraw_rom used. Fetches are
+// FPGA-paced (next sector requested only when the FIFO has room), so an
+// arbitrarily large file streams through a fixed, tiny buffer.
 //
 // 2026, Rok Krajnc <rok.krajnc@gmail.com>
 
@@ -100,8 +84,7 @@ sidraw_fifo #(
 
 
 //// sector-count from file size: n_sectors = ceil(img_size / SECTOR_SZ) ////
-// SECTOR_SZ is a power of two (512); use a shift. img_size is 64-bit but
-// .sidraw files are at most a few MB, so 32 bits of sector index is ample.
+// SECTOR_SZ is a power of two (512), so use a shift; 32-bit sector index is ample.
 wire [63:0] size_round    = img_size + {{55{1'b0}}, 9'd511};
 wire [31:0] n_sectors_calc = size_round[40:9];   // /512, capped to 32 bits
 
@@ -125,11 +108,8 @@ always @(posedge clk, negedge rst_n) begin
     fifo_flush <= 1'b0;
 
     // A (re)mount restarts playback from sector 0, regardless of state.
-    // Go via S_REMOUNT (not straight to S_REQ): if the remount preempted an
-    // in-flight sector transfer, the firmware is still serving it (sd_ack
-    // high). Re-issuing sd_rd now would make S_WAIT_ACK latch that lingering
-    // ack as ours and capture the old sector's tail as the new file's header
-    // -> player header error, new tune never plays. S_REMOUNT waits it out.
+    // Go via S_REMOUNT (not straight to S_REQ) so any in-flight sector
+    // transfer finishes before we re-issue sd_rd.
     if (img_mounted) begin
       n_sectors  <= n_sectors_calc;
       sec_idx    <= 32'd0;
@@ -141,9 +121,8 @@ always @(posedge clk, negedge rst_n) begin
       case (state)
 
         S_IDLE: begin
-          // wait for img_mounted (handled above). A full-core reset (OSD
-          // "Restart") lands here and STAYS idle -- it is a reset to the initial
-          // state, not a replay: the user re-selects a file to start playback.
+          // wait for img_mounted (handled above). A full-core reset lands
+          // here and STAYS idle; the user re-selects a file to start playback.
         end
 
         S_REQ: begin
@@ -180,14 +159,12 @@ always @(posedge clk, negedge rst_n) begin
 
         S_DRAIN: begin
           // no more sectors to fetch; player drains the FIFO and stops on
-          // the .sidraw 0xFF EOF byte. A fresh img_mounted (above) restarts.
+          // the .sidraw 0xFF EOF byte.
         end
 
         S_REMOUNT: begin
-          // wait for any preempted, in-flight sector transfer to fully end
-          // before requesting sector 0 of the freshly mounted file. Any
-          // sd_dout_strobe arriving here is the old sector's tail -- ignored
-          // (no fifo_wr in this state), and the FIFO was flushed on remount.
+          // wait for any in-flight sector transfer to end before requesting
+          // sector 0; strobes here are the old sector's tail and are ignored.
           if (!sd_ack) state <= S_REQ;
         end
 

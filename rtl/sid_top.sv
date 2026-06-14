@@ -35,7 +35,18 @@ module sid_top
 	input         ld_clk,
 	input  [11:0] ld_addr,
 	input  [15:0] ld_data,
-	input         ld_wr
+	input         ld_wr,
+
+	// per-voice probe taps (chip 0) for the VGA plasma visualizer. purely
+	// additive -- assigned from existing internal registers/wires with no
+	// behavioural change. consumers may leave them unconnected. see
+	// modules/plasma/ and modules/top/rtl/sidsynth_top.sv.
+	output [15:0] tap_v1_freq,
+	output [15:0] tap_v2_freq,
+	output [15:0] tap_v3_freq,
+	output  [7:0] tap_v1_env,
+	output  [7:0] tap_v2_env,
+	output  [7:0] tap_v3_env
 );
 
 localparam N = DUAL ? 2 : 1;
@@ -65,6 +76,8 @@ reg   [7:0] Filter_Mode_Vol[N];
 
 wire  [7:0] Misc_Osc3[N];
 wire  [7:0] Misc_Env3[N];
+wire  [7:0] Misc_Env1[N];   // v1 envelope tap (plasma visualizer)
+wire  [7:0] Misc_Env2[N];   // v2 envelope tap (plasma visualizer)
 
 wire [21:0] voice_1[N];
 wire [21:0] voice_2[N];
@@ -103,6 +116,7 @@ generate
 			.osc_msb_in(voice_3_PA_MSB[i]),
 			.osc_msb_out(voice_1_PA_MSB[i]),
 			.voice_out(voice_1[i]),
+			.env_out(Misc_Env1[i]),
 			._st_out(_st_out[i*3+0]),
 			.p_t_out(p_t_out[i*3+0]),
 			.ps__out(ps__out[i*3+0]),
@@ -124,6 +138,7 @@ generate
 			.osc_msb_in(voice_1_PA_MSB[i]),
 			.osc_msb_out(voice_2_PA_MSB[i]),
 			.voice_out(voice_2[i]),
+			.env_out(Misc_Env2[i]),
 			._st_out(_st_out[i*3+1]),
 			.p_t_out(p_t_out[i*3+1]),
 			.ps__out(ps__out[i*3+1]),
@@ -313,5 +328,13 @@ assign data_out = cs[0] ? bus_data[0] : bus_data[N-1];
 
 assign audio_l = audio[0];
 assign audio_r = audio[N-1];
+
+// per-voice probe taps (chip 0) -- visualizer only, no behavioural effect
+assign tap_v1_freq = Voice_1_Freq[0];
+assign tap_v2_freq = Voice_2_Freq[0];
+assign tap_v3_freq = Voice_3_Freq[0];
+assign tap_v1_env  = Misc_Env1[0];
+assign tap_v2_env  = Misc_Env2[0];
+assign tap_v3_env  = Misc_Env3[0];
 
 endmodule

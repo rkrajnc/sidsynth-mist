@@ -1,9 +1,7 @@
 # SIDsynth - timing constraints
 #
-# Input clocks present on MiST: CLOCK_27 (27 MHz), CLOCK_32 (32 MHz),
-# CLOCK_50 (50 MHz). v1 uses CLOCK_27[0] driving a PLL to a 54 MHz sys
-# clock (M=12, N=1, C0=6; VCO=324 MHz). 54 MHz is exactly 54x the SID
-# ce_1m strobe (1.000 MHz, no drift).
+# v1 drives a PLL from CLOCK_27[0] to a 54 MHz sys clock, which is exactly
+# 54x the SID ce_1m strobe (1.000 MHz, no drift).
 
 
 # time format
@@ -25,10 +23,8 @@ derive_pll_clocks
 derive_clock_uncertainty
 
 
-# group asynchronous domains
-#  - sys_clk (54 MHz, pll c0)
-#  - clk_pix (25.2 MHz VGA dot clock, pll_pix c0) -- async to sys_clk
-#  - spi_clk (ARM SPI link; user_io/osd cross into sys/pix internally)
+# group asynchronous domains: sys_clk (54 MHz), clk_pix (25.2 MHz VGA dot
+# clock), and spi_clk (ARM SPI link) are mutually async.
 set_clock_groups -asynchronous \
   -group [get_clocks {pll_inst|altpll_component|auto_generated|pll1|clk[0]}] \
   -group [get_clocks {pll_pix_inst|altpll_component|auto_generated|pll1|clk[0]}] \

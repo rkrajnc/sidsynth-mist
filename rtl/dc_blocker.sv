@@ -1,50 +1,16 @@
 // dc_blocker.sv
-// 1st-order IIR DC blocker (high-pass), multiplier-free, pipelined,
+// Multiplier-free, pipelined 1st-order IIR DC blocker (high-pass) with
 // AXI-Stream-like flow control on both interfaces.
 //
-// Removes the slowly-varying DC component from a signed audio stream
-// while leaving the audible band intact. Topology (Julius O. Smith
-// canonical form):
+// y[n] = x[n] - x[n-1] + alpha*y[n-1], alpha = 1 - 2^-SHIFT (so the
+// leak is a clean shift). A SHIFT-bit fractional accumulator and a
+// round-toward-zero shift make the residual converge symmetrically to
+// zero. fc =~ fs / (2*pi * 2^SHIFT); at 1 MHz, SHIFT=15 gives ~4.8 Hz.
 //
-//     y[n] = x[n] - x[n-1] + alpha * y[n-1]
-//
-// with alpha = 1 - 2^-SHIFT (the leak is a clean shift, no
-// multiplier). Internal accumulator Y[n] = y[n] * 2^SHIFT keeps SHIFT
-// bits of fractional precision so the leak converges cleanly:
-//
-//     diff   = x[n] - x[n-1]
-//     Y[n]   = Y[n-1] + (diff << SHIFT) - rtz_shr(Y[n-1])
-//     y[n]   = saturate(rtz_shr(Y[n]))
-//
-// Corner frequency:  fc =~ fs / (2*pi * 2^SHIFT)
-// At fs = 1 MHz:
-//     SHIFT = 14   ->   fc =~ 9.7 Hz    settle ~16 ms
-//     SHIFT = 15   ->   fc =~ 4.8 Hz    settle ~33 ms
-//     SHIFT = 16   ->   fc =~ 2.4 Hz    settle ~65 ms
-//
-// Round-toward-zero shift:
-//   `>>>` in Verilog rounds toward -infinity, which makes the leak
-//   asymmetric (positive Y stalls, negative Y keeps decaying). We
-//   bias-add (2^SHIFT - 1) when Y is negative before the shift, so
-//   both signs round toward zero and converge symmetrically.
-//
-// AXI-Stream flow control:
-//   in_vld / in_rdy / in_dat        (upstream producer -> module)
-//   out_vld / out_rdy / out_dat     (module -> downstream consumer)
-//   Transfers happen on posedge clk where both vld && rdy are high.
-//   in_vld must remain stable until in_rdy asserts. The module
-//   stalls (deasserts in_rdy) when the pipeline is full and
-//   downstream isn't accepting.
-//
-// Pipeline (3 sample-rate stages, each gated by valid + flow control):
-//
-//   R1:  capture x_prev_r, diff_lsl_r          when in_vld && in_rdy
-//   R2:  update y_r with the new sample        when R1->R2 transfer
-//   R3:  saturate(rtz_shr(y_r)) -> out_dat_r   when R2->R3 transfer
-//
-//   Each stage's longest combinational path is one IW-bit adder (R2)
-//   or one DW-bit compare/mux (R3); well under the 54 MHz budget on
-//   Cyclone III.
+// 3 sample-rate pipeline stages, each gated by valid + flow control:
+//   R1: capture x_prev_r, diff_lsl_r
+//   R2: update y_r
+//   R3: saturate(rtz_shr(y_r)) -> out_dat_r
 //
 // 2026, Rok Krajnc <rok.krajnc@gmail.com>
 
@@ -96,9 +62,8 @@ module dc_blocker #(
 
 
   //// flow control: propagate stalls back through the pipeline ////
-  // out_consumed: downstream took our current output this cycle
-  // rN_can_accept: stage N's register can hold a new value this cycle
-  //                (either it's empty, or it's transferring its current value forward)
+  // out_consumed: downstream took our output this cycle. rN_can_accept:
+  // stage N can take a new value (it's empty or transferring forward).
   logic out_consumed;
   logic r2_to_out;       // transfer R2's data into out_dat_r
   logic r1_to_r2;        // transfer R1's data into R2 (i.e. update y_r)

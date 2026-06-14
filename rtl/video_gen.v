@@ -1,16 +1,10 @@
 // video_gen.v
 // Minimal VGA background generator for the MiST OSD menu overlay.
 //
-// SIDsynth has no real video content -- it only needs a clean, stable
-// progressive video signal for the MiST OSD (osd.v) to overlay the firmware
-// menu onto. This wraps the ported vga_ctrl timing generator (default params
-// are exactly 640x480@60, H_WHOLE=800 / V_WHOLE=525) and paints a flat
-// background colour in the active area. Run it at one pixel per clk on the
-// dedicated VGA pixel clock (clk_pix ~= 25.175 MHz).
-//
-// Outputs feed osd.v: R/G/B + HSync/VSync. osd.v is instantiated with
-// USE_BLANKS=0, so it derives blanking from the sync edges and HBlank/VBlank
-// are not needed downstream (exposed here only for completeness/debug).
+// Wraps the ported vga_ctrl timing generator (default params are 640x480@60,
+// H_WHOLE=800 / V_WHOLE=525) and paints a flat background colour in the active
+// area, run at one pixel per clk on the VGA pixel clock (~25.175 MHz). Outputs
+// feed osd.v; HBlank/VBlank are exposed only for completeness/debug.
 //
 // 2026, Rok Krajnc <rok.krajnc@gmail.com>
 
@@ -33,7 +27,14 @@ module video_gen #(
   output wire        vga_hs,
   output wire        vga_vs,
   output wire        vga_hblank,
-  output wire        vga_vblank
+  output wire        vga_vblank,
+
+  // pixel-position taps (for an external pixel generator, e.g. the plasma
+  // visualizer). h_cnt/v_cnt are the raw vga_ctrl counters; active is high in
+  // the visible area. left unconnected when not needed.
+  output wire [9:0]  vga_h_cnt,
+  output wire [9:0]  vga_v_cnt,
+  output wire        vga_active
 );
 
 
@@ -41,6 +42,8 @@ wire active;
 wire blank;
 wire hs;
 wire vs;
+wire [9:0] h_cnt;
+wire [9:0] v_cnt;
 
 // 640x480@60 from vga_ctrl's default parameters (25.175 MHz dot clock).
 // h_match/v_match unused -> tie to 0; counter/status taps left open.
@@ -51,8 +54,8 @@ vga_ctrl u_vga_ctrl (
   .en        (1'b1),
   .h_match   (10'd0),
   .v_match   (10'd0),
-  .h_cnt     (),
-  .v_cnt     (),
+  .h_cnt     (h_cnt),
+  .v_cnt     (v_cnt),
   .cnt_match (),
   .active    (active),
   .blank     (blank),
@@ -72,6 +75,10 @@ assign vga_hs     = hs;
 assign vga_vs     = vs;
 assign vga_hblank = blank;
 assign vga_vblank = blank;
+
+assign vga_h_cnt  = h_cnt;
+assign vga_v_cnt  = v_cnt;
+assign vga_active = active;
 
 
 endmodule

@@ -49,9 +49,8 @@ module sidsynth_top (
 
 
 //// unused IO ////
-// SDRAM still unused (full-song buffering via SDRAM is a future step; the
-// SD path streams through a small on-chip FIFO instead). VGA + SPI are now
-// driven for the OSD menu / SD-file loader below.
+// SDRAM unused (the SD path streams through a small on-chip FIFO instead).
+// VGA + SPI drive the OSD menu / SD-file loader below.
 assign UART_TX    = 1'b1;            // MIDI/UART idle high
 assign SDRAM_DQ   = 16'bzzzzzzzzzzzzzzzz;
 assign SDRAM_A    = 13'd0;
@@ -86,13 +85,9 @@ reg  [3-1:0] rst_sync;
 wire         sys_rst_n;
 
 // OSD "Restart" (status[1]) requests a full reset of the whole sys_clk domain
-// -- a panic/recovery to the initial state (clears stuck notes, both SIDs,
-// filters, DC/SDM, the reader/player FSMs). user_io is NOT in this reset (it
-// free-runs on the SPI link), so the ARM link + OSD survive; playback does NOT
-// auto-resume -- the reader returns to idle and the user re-selects a file.
-// restart_req is synced off pll_locked, not sys_rst_n, since it DRIVES the
-// reset and must not be cleared by it. Driven in the "OSD playback control"
-// section once uio_status exists.
+// (panic/recovery to initial state); user_io is excluded so the ARM link
+// survives and playback does not auto-resume. Synced off pll_locked (not
+// sys_rst_n) since it drives the reset; driven in the OSD playback section.
 wire         restart_req;
 
 always @(posedge sys_clk or negedge pll_locked) begin
@@ -105,9 +100,8 @@ assign sys_rst_n = rst_sync[2];
 
 
 //// VGA pixel clock (separate PLL: 27 MHz -> 25.2 MHz) ////
-// Dedicated dot clock for the OSD menu video. 25.2 MHz with the 640x480
-// (800x525 total) timing in video_gen is a proper 60 Hz VGA mode. Kept
-// independent of the 54 MHz system PLL so the audio clocking is untouched.
+// Dedicated dot clock for the OSD menu video (25.2 MHz = proper 60 Hz VGA
+// with video_gen's 640x480 timing). Independent of the 54 MHz system PLL.
 wire clk_pix;
 wire pix_locked;
 
@@ -131,28 +125,13 @@ assign pix_rst_n = pix_rst_sync[2];
 
 
 //// MiST user_io: ARM SPI link (config string, OSD menu, SD file mount) ////
-// The stock MiST firmware reads CONF_STR to build the OSD menu and file
-// browser. Core name "SIDSYNTH" makes the firmware change into a /SIDSYNTH
-// directory on the SD card, so tunes are loaded from there. The 'S' entry
-// mounts the picked file as a block device; sidraw_sd_reader then streams
-// 512-byte sectors on demand. 'T2,Toggle playing' and 'T1,Restart' are
-// momentary toggles: the firmware pulses status[2]/status[1] high-then-low,
-// and the FPGA acts on them (see "OSD playback control" + "reset" below):
-// T2 flips the internal play/stop state; T1 triggers a full reset of the
-// sys_clk domain (everything but user_io) -- a panic/recovery to the initial
-// state, NOT a replay (playback stays stopped until the user re-selects a
-// file). Using a momentary toggle (not a level 'O' option) lets the FPGA "do
-// the right thing" regardless of the firmware bit's absolute value.
-//
-// 'O3,SID model' is a persistent setting (not an action), so a level 'O'
-// option is the right tool: the firmware owns status[3] and the menu shows
-// the current value. status[3]=0 -> 6581 (default), 1 -> 8580; it drives the
-// `mode` input of BOTH SID cores (global select).
-//
-// CONF_STR byte format follows menu-8bit.c parsing. The file-extension field
-// ('SID') and the exact mount-entry syntax should be confirmed on hardware
-// during bring-up (see modules/top/CLAUDE.md).
-localparam CONF_STR = "SIDSYNTH;;S0,SID,Load tune;T2,Toggle playing;O3,SID model,6581,8580;T1,Restart;V,SIDSYNTH v_0_3";
+// The MiST firmware reads CONF_STR to build the OSD menu; core name "SIDSYNTH"
+// loads tunes from a /SIDSYNTH SD directory and the 'S' entry mounts the file
+// for sidraw_sd_reader. 'T2'/'T1' are momentary toggles (firmware pulses
+// status[2]/status[1]): T2 flips play/stop, T1 full-resets the sys_clk domain.
+// 'O3' (SID model: status[3], 6581/8580) and 'O4' (Visualizer: status[4],
+// plasma on/off) are persistent level options. See modules/top/CLAUDE.md.
+localparam CONF_STR = "SIDSYNTH;;S0,SID,Load tune;T2,Toggle playing;O3,SID model,6581,8580;O4,Visualizer,On,Off;T1,Restart;V,SIDSYNTH v_0_4";
 
 wire [63:0] uio_status;
 wire        uio_sdo;          // user_io SPI MISO
@@ -197,11 +176,9 @@ user_io #(
 );
 
 //// OSD playback control: "Toggle playing" + "Restart" ////
-// 'T' menu entries are momentary: the firmware pulses the status bit high
-// then immediately low (menu-8bit.c). status is set in the SPI domain, so
+// 'T' menu entries are momentary (firmware pulses the SPI-domain status bit).
 //   status[2] = "Toggle playing" -> flip internal play/stop state
 //   status[1] = "Restart"        -> full core reset (driven via restart_req)
-//
 // Sync "Toggle playing" into sys_clk + rising-edge detect.
 reg [1:0] toggle_sync;
 reg       toggle_d;
@@ -219,9 +196,8 @@ end
 wire toggle_pulse = toggle_sync[1] & ~toggle_d;      // rising edge: Toggle playing
 
 // "Restart" (status[1]) -> full core reset (see reset section). Synced off
-// pll_locked, NOT sys_rst_n, so the core reset it drives can't reset the
-// synchroniser mid-pulse. Level-held for the firmware's toggle-pulse width,
-// then released through rst_sync.
+// pll_locked, not sys_rst_n, so the reset it drives can't clear the
+// synchroniser mid-pulse.
 reg [2:0] restart_sync_r;
 always @(posedge sys_clk or negedge pll_locked) begin
   if (!pll_locked) restart_sync_r <= 3'd0;
@@ -230,8 +206,8 @@ end
 assign restart_req = restart_sync_r[2];
 
 // play/stop state for the .sidraw branch. A new load (img_mounted) auto-plays;
-// "Toggle playing" flips it. sidraw_stop gates sector fetches (reader .stop),
-// freezes the player tick, and mutes the player audio branch (see uses below).
+// "Toggle playing" flips it. sidraw_stop gates fetches, freezes the player
+// tick, and mutes the player audio branch.
 reg playing;
 always @(posedge sys_clk, negedge sys_rst_n) begin
   if (!sys_rst_n)        playing <= 1'b1;   // default: play once a tune loads
@@ -241,12 +217,9 @@ end
 
 wire sidraw_stop = ~playing;
 
-// Playback-SID reset pulse. Asserted on every new .sidraw load (img_mounted)
-// so a freshly loaded tune begins from clean SID register state -- clears stuck
-// notes and any residual registers the previous tune left behind -- WITHOUT
-// disturbing the MIDI chain (a full reset would). Stretched a few cycles so
-// sid_top fully clears. (OSD "Restart" is the heavier hammer: a full core reset
-// via restart_req, which already resets this SID, so it isn't wired here.)
+// Playback-SID reset pulse. Asserted on every new .sidraw load so a fresh tune
+// starts from clean SID register state, without disturbing the MIDI chain.
+// Stretched a few cycles so sid_top fully clears.
 reg [3:0] sidp_rst_cnt;
 reg       sidp_reset;
 always @(posedge sys_clk, negedge sys_rst_n) begin
@@ -269,8 +242,7 @@ end
 assign SPI_DO = CONF_DATA0 ? 1'bz : uio_sdo;
 
 // OSD "SID model" select (status[3]): 0 = 6581 (default), 1 = 8580. Drives the
-// `mode` input of both SID cores globally. mode is a combinational select
-// inside sid_top (filter curve / waveform mixing), safe to change live.
+// combinational `mode` input of both SID cores; safe to change live.
 wire sid_model_8580 = uio_status[3];
 
 
@@ -296,9 +268,8 @@ always @(posedge sys_clk, negedge sys_rst_n) begin
   end
 end
 
-// LED is driven in the "SD diagnostic instrumentation" section below
-// (heartbeat while idle, solid once the player emits a SID write). When
-// DEBUG_SD=0 it falls back to the plain heartbeat.
+// LED: plain ~1 Hz heartbeat (FPGA alive).
+assign LED = blinky_r;
 
 
 //// ce_1m strobe (54-cycle divider from sys_clk -> 1.000 MHz) ////
@@ -322,10 +293,8 @@ end
 
 
 //// ce_9m strobe (6-cycle divider from sys_clk -> 9.000 MHz) ////
-// Drives the SDM PDM rate. Kept << sys_clk so the MiST board's audio
-// IO + passive 1-pole RC can settle to full swing -- on this hardware,
-// toggling at the full 54 MHz produces reduced-amplitude analog-ish
-// output that costs dynamic range and radiates more RF.
+// Drives the SDM PDM rate. Kept << sys_clk so the MiST audio IO + passive RC
+// settle to full swing (toggling at 54 MHz loses amplitude and radiates RF).
 reg [3-1:0] ce9_cnt;
 reg         ce_9m;
 
@@ -346,9 +315,8 @@ end
 
 
 //// clock-enable ////
-// single project-wide clk_en net. Tied high in M1b-midi (no clock
-// gating yet); routed through every module so we can swap in a gating
-// source later without touching the instantiations.
+// single project-wide clk_en net, tied high for now and routed through every
+// module so a gating source can be swapped in later.
 wire sys_clk_en = 1'b1;
 
 
@@ -555,19 +523,15 @@ sid_top #(
 
 
 //// .sidraw playback path: SD -> sidraw_player -> dedicated SID core ////
-// sidraw_sd_reader streams the picked file off the SD card (via user_io
-// block reads) and feeds a sidraw_player, which drives a SECOND sid_top
-// instance via its own private SID register bus. Two SID cores let us
-// avoid mux RTL on the bus and let the MIDI chain keep responding to keys
-// while the .sidraw plays in parallel. Audio from both SIDs is summed
-// pre-dc_blocker (each >>>1 to fit 18 bits; the ~4 kLSB SID DC bias
-// survives the average unchanged).
+// sidraw_sd_reader streams the picked file off the SD card and feeds a
+// sidraw_player driving a SECOND sid_top via its own SID register bus. Two
+// cores avoid bus-mux RTL and let the MIDI chain keep responding while the
+// .sidraw plays. Both SID outputs are summed pre-dc_blocker (each >>>1).
 
-// SD reader -> player byte stream (vld/rdy handshake). Replaces the
-// BRAM-baked sidraw_rom: the file the user picks in the OSD menu is mounted
-// by the firmware and streamed sector-by-sector through a small FIFO. The
-// reader pulses `sidraw_start` when a file mounts; sidraw_player then waits
-// for bytes on the handshake (it stalls cleanly if the FIFO underruns).
+// SD reader -> player byte stream (vld/rdy handshake). The OSD-picked file is
+// mounted by the firmware and streamed sector-by-sector through a small FIFO;
+// the reader pulses `sidraw_start` on mount and the player stalls cleanly on
+// FIFO underrun.
 wire [7:0] sd_byte_dat;
 wire       sd_byte_vld;
 wire       sd_byte_rdy;
@@ -594,9 +558,8 @@ sidraw_sd_reader #(
   .byte_rdy       (sd_byte_rdy)
 );
 
-// Stop also freezes playback timing: gate the player's tick so the SID
-// envelopes/oscillators hold, and mute the player's audio branch so a held
-// note doesn't drone while stopped.
+// Stop also freezes playback timing: gate the player's tick so the SID holds,
+// and mute its audio branch so a held note doesn't drone while stopped.
 wire player_ce_tick = ce_1m & ~sidraw_stop;
 
 // player -> dedicated SID register bus
@@ -625,6 +588,10 @@ sidraw_player u_sidraw_player (
 
 // dedicated SID core for .sidraw playback (mirrors u_sid's config)
 wire signed [17:0] sid_audio_l_player;
+
+// per-voice probe taps (sys_clk domain) feeding the plasma visualizer
+wire [15:0] vis_v1_freq, vis_v2_freq, vis_v3_freq;
+wire  [7:0] vis_v1_env,  vis_v2_env,  vis_v3_env;
 
 sid_top #(
   .MULTI_FILTERS (1),
@@ -659,32 +626,31 @@ sid_top #(
   .ld_clk      (sys_clk),
   .ld_addr     (12'd0),
   .ld_data     (16'd0),
-  .ld_wr       (1'b0)
+  .ld_wr       (1'b0),
+
+  // per-voice probe taps for the plasma visualizer (sys_clk domain)
+  .tap_v1_freq (vis_v1_freq),
+  .tap_v2_freq (vis_v2_freq),
+  .tap_v3_freq (vis_v3_freq),
+  .tap_v1_env  (vis_v1_env),
+  .tap_v2_env  (vis_v2_env),
+  .tap_v3_env  (vis_v3_env)
 );
 
-// 50/50 mix of the two SIDs. Each audio_l is 18-bit SIGNED with a
-// ~4000-LSB positive DC bias; the sum is sign-extended to 19 bits and
-// arithmetic-shifted right by 1, preserving sign and DC level. dc_blocker
-// downstream removes the bias before SDM.
-//
-// NOTE: this MUST be a signed add + arithmetic (>>>) shift. An unsigned
-// add / bit-slice misreads the sign bit when the combined SID output dips
-// below zero -- which happens when all three voices hit near-full envelope
-// simultaneously (a chord) with their pulses aligned low -- wrapping the
-// sample to near full scale. That produced the audible attack-onset click.
-// mute the .sidraw branch while stopped (player tick is frozen, so the SID
-// would otherwise hold its last waveform as a drone)
+// 50/50 mix of the two SIDs: sign-extend the sum to 19 bits and arithmetic-
+// shift right by 1 (preserving sign and the ~4000-LSB DC bias, which dc_blocker
+// removes before SDM). Must be a signed add + arithmetic (>>>) shift -- an
+// unsigned add wraps near-full-scale when a chord dips below zero (the audible
+// attack-onset click). The .sidraw branch is muted while stopped.
 wire signed [17:0] sid_audio_player_eff = sidraw_stop ? 18'sd0 : sid_audio_l_player;
 wire signed [18:0] sid_audio_sum        = sid_audio_l + sid_audio_player_eff;
 wire signed [17:0] sid_audio_mixed      = sid_audio_sum >>> 1;
 
 
 //// DC blocker between SID and SDM DAC ////
-// SID's audio_l carries a ~4000-LSB constant DC bias (VOICE_DC_6581
-// baked into every voice DCA, plus MIXER_DC_6581). Strip it before
-// the PDM stage so the external RC isn't pinned to a DC offset.
-// sid_top has no native flow control -- drive in_vld = ce_1m. SDM
-// has no flow control either, so out_rdy is tied to 1.
+// SID's audio_l carries a ~4000-LSB DC bias; strip it before the PDM stage so
+// the external RC isn't pinned to a DC offset. Neither SID nor SDM has flow
+// control, so in_vld = ce_1m and out_rdy = 1.
 wire        dcblock_vld;
 wire [17:0] dcblock_audio;
 
@@ -704,12 +670,10 @@ dc_blocker #(
 
 
 //// dc_blocker -> sdm sample latch ////
-// The SDM clk_en runs at 9 MHz (every 6th sys_clk) but dcblock_vld is a
-// 1-cycle pulse at sys_clk rate; the two won't line up. Register the
-// dc_blocker output and hold it stable, then drive the SDM with a
-// sticky in_vld so it reloads x_reg idempotently on every ce_9m. Stays
-// silent (in_vld=0) until the first sample arrives so the SDM doesn't
-// integrate garbage during boot.
+// The 9 MHz SDM clk_en and the 1-cycle dcblock_vld pulse won't line up, so
+// register the dc_blocker output and drive the SDM with a sticky in_vld that
+// reloads x_reg idempotently every ce_9m. Stays silent until the first sample
+// so the SDM doesn't integrate garbage during boot.
 reg [18-1:0] sdm_in_dat_r;
 reg          sdm_in_vld_r;
 
@@ -746,12 +710,16 @@ assign AUDIO_L = sid_pdm;
 assign AUDIO_R = sid_pdm;
 
 
-//// VGA + OSD menu ////
-// video_gen makes a plain 640x480@60 background on the dedicated pixel
-// clock; osd.v overlays the MiST firmware menu (driven over SPI_SS3) onto
-// it. SIDsynth has no real video content -- this exists purely so the OSD
-// file browser is visible. Sync passes straight through; osd.v only tints
-// the RGB inside the menu box.
+//// VGA + OSD menu + plasma visualizer ////
+// video_gen produces 640x480@60 timing + flat background; `plasma` renders a
+// SID-reactive background; osd.v overlays the MiST menu on top. The OSD
+// "Visualizer" toggle (status[4]) selects plasma vs the flat colour.
+// Flat background = C64 "Dark Grey" (#4C4C4C = 76,76,76 -> 76>>2 = 19 at
+// 6-bit/channel, a ~70%-dark neutral grey).
+localparam [5:0] BG_OFF_R = 6'd19;
+localparam [5:0] BG_OFF_G = 6'd19;
+localparam [5:0] BG_OFF_B = 6'd19;
+
 wire [5:0] vid_r;
 wire [5:0] vid_g;
 wire [5:0] vid_b;
@@ -759,8 +727,15 @@ wire       vid_hs;
 wire       vid_vs;
 wire       vid_hblank;
 wire       vid_vblank;
+wire [9:0] vid_h_cnt;
+wire [9:0] vid_v_cnt;
+wire       vid_active;
 
-video_gen u_video_gen (
+video_gen #(
+  .BG_R (BG_OFF_R),
+  .BG_G (BG_OFF_G),
+  .BG_B (BG_OFF_B)
+) u_video_gen (
   .clk_pix    (clk_pix),
   .rst_n      (pix_rst_n),
   .vga_r      (vid_r),
@@ -769,127 +744,86 @@ video_gen u_video_gen (
   .vga_hs     (vid_hs),
   .vga_vs     (vid_vs),
   .vga_hblank (vid_hblank),
-  .vga_vblank (vid_vblank)
+  .vga_vblank (vid_vblank),
+  .vga_h_cnt  (vid_h_cnt),
+  .vga_v_cnt  (vid_v_cnt),
+  .vga_active (vid_active)
 );
 
+// OSD "Visualizer" toggle: status[4]=0 -> plasma ON (default, first label),
+// =1 -> OFF (flat C64-dark-grey background, see BG_OFF_* above).
+wire vis_enable = ~uio_status[4];
 
-//// SD diagnostic instrumentation ////
-// The .sidraw SD path has no on-board observability: when nothing comes out
-// of the speaker there's no way to tell whether the firmware mounted the file
-// at all, whether sectors are being served, or whether the player ever ran.
-// This block lights up the pipeline so it can be bisected on real hardware.
-//
-// Six sticky flags track how far a playback attempt got, in pipeline order:
-//   mounted  : user_io pulsed img_mounted             (firmware mount reached FPGA)
-//   sd_rd    : reader asserted sd_rd                   (a sector was requested)
-//   sd_data  : user_io strobed a sector byte           (firmware is serving data)
-//   fifo_byte: FIFO presented a byte to the player     (data crossed the FIFO)
-//   sid_write: player drove a SID register write        (parser ran -> audio)
-//   error    : player hit a bad header / opcode
-// All flags clear on every img_mounted, so each file selection restarts the
-// indicator from scratch.
-//
-// VGA: the background stays the normal dim blue until a mount reaches the
-// FPGA, then flips to a solid stage colour (priority-encoded, furthest stage
-// wins). Reading the colour after picking a file tells you where it stalled:
-//   (background unchanged) no mount      -> firmware/CONF_STR never mounted
-//   purple                 mounted only  -> reader never requested a sector
-//                                           (stop asserted? img_size -> 0 sectors?)
-//   cyan                   sd_rd, no data-> firmware not serving the read
-//   orange                 data, no fifo -> sd_dout capture / FIFO write issue
-//   yellow                 fifo, no write-> bytes reach player but no SID write
-//                                           (header rejected? parser stuck)
-//   green                  sid_write     -> end-to-end OK (should be audible)
-//   red                    error         -> player halted on bad header/opcode
-//
-// LED: 1 Hz heartbeat = FPGA alive; solid = player has emitted >=1 SID write.
-//
-// Set DEBUG_SD=0 to revert to the plain heartbeat LED and flat background.
-localparam DEBUG_SD = 1'b1;
 
-// sticky stage flags (sys_clk domain)
-reg dbg_mounted;
-reg dbg_sd_rd;
-reg dbg_sd_data;
-reg dbg_fifo;
-reg dbg_write;
-reg dbg_error;
+//// plasma visualizer ////
+// SID-reactive plasma background (modules/plasma): voice 1/2/3 -> R/G/B, per-
+// voice frequency drives flow/blob size, envelope drives brightness. Fed from
+// the .sidraw player SID's probe taps. plasma_cdc owns all conditioning between
+// the raw sys_clk taps and the clk_pix core (vsync edge-detect, sys_clk->clk_pix
+// CDC + per-frame snapshot, EMA smoothing, env->vol map + brightness floor), so
+// the top is plain wiring of the raw taps + raw vid_vs. The two clocks are
+// false-pathed via set_clock_groups in sidsynth_mist.sdc. plasma renders at
+// 8-bit/channel; video_dither drops it to the 6-bit DAC with dithering.
+wire [7:0] plasma_r8;
+wire [7:0] plasma_g8;
+wire [7:0] plasma_b8;
 
-always @(posedge sys_clk, negedge sys_rst_n) begin
-  if (!sys_rst_n) begin
-    dbg_mounted <= 1'b0;
-    dbg_sd_rd   <= 1'b0;
-    dbg_sd_data <= 1'b0;
-    dbg_fifo    <= 1'b0;
-    dbg_write   <= 1'b0;
-    dbg_error   <= 1'b0;
-  end else if (img_mounted) begin
-    // fresh mount: restart the indicator for the newly picked file
-    dbg_mounted <= 1'b1;
-    dbg_sd_rd   <= 1'b0;
-    dbg_sd_data <= 1'b0;
-    dbg_fifo    <= 1'b0;
-    dbg_write   <= 1'b0;
-    dbg_error   <= 1'b0;
-  end else begin
-    if (sd_rd)          dbg_sd_rd   <= 1'b1;
-    if (sd_dout_strobe) dbg_sd_data <= 1'b1;
-    if (sd_byte_vld)    dbg_fifo    <= 1'b1;
-    if (p_cs & p_we)    dbg_write   <= 1'b1;
-    if (plr_error)      dbg_error   <= 1'b1;
-  end
+plasma_cdc #(.CW(8)) u_plasma (
+  // SID (sys_clk) domain: raw, live taps (16-bit freq + 8-bit envelope/voice)
+  .clk_sys   (sys_clk),
+  .sys_rst_n (sys_rst_n),
+  .freq_v1   (vis_v1_freq),
+  .freq_v2   (vis_v2_freq),
+  .freq_v3   (vis_v3_freq),
+  .env_v1    (vis_v1_env),
+  .env_v2    (vis_v2_env),
+  .env_v3    (vis_v3_env),
+  // pixel (clk_pix) domain: raw vsync + VGA pixel coords
+  .clk_pix   (clk_pix),
+  .pix_rst_n (pix_rst_n),
+  .vid_vs    (vid_vs),
+  .x         (vid_h_cnt),
+  .y         (vid_v_cnt),
+  .r         (plasma_r8),
+  .g         (plasma_g8),
+  .b         (plasma_b8)
+);
+
+// 8 -> 6 bit dithering (from minimig amber) hides banding when truncating the
+// plasma to the 6-bit DAC. Combinational; h/v parity from the VGA counter LSBs,
+// frame reset from vsync, mode hardwired to temporal+random (2'b11).
+wire [5:0] plasma_r;
+wire [5:0] plasma_g;
+wire [5:0] plasma_b;
+
+video_dither u_dither (
+  .clk   (clk_pix),
+  .rst_n (pix_rst_n),
+  .vs    (vid_vs),
+  .h_par (vid_h_cnt[0]),
+  .v_par (vid_v_cnt[0]),
+  .mode  (2'b11),
+  .r_in  (plasma_r8),
+  .g_in  (plasma_g8),
+  .b_in  (plasma_b8),
+  .r_out (plasma_r),
+  .g_out (plasma_g),
+  .b_out (plasma_b)
+);
+
+// plasma+dither output is registered (1 clk_pix after x/y; dither adds none);
+// delay the active gate to match so the background is black during blanking.
+reg vid_active_d;
+always @(posedge clk_pix or negedge pix_rst_n) begin
+  if (!pix_rst_n) vid_active_d <= 1'b0;
+  else            vid_active_d <= vid_active;
 end
 
-// LED: heartbeat until the player writes a SID register, then solid on.
-assign LED = (DEBUG_SD && dbg_write) ? 1'b1 : blinky_r;
-
-// cross the (slow, sticky) flag bus into the pixel-clock domain. sys_clk and
-// clk_pix are already declared async (set_clock_groups in sidsynth_mist.sdc),
-// so this 2-FF synchroniser is a clean CDC -- no extra SDC needed.
-wire [5:0] dbg_bus = {dbg_error, dbg_write, dbg_fifo, dbg_sd_data, dbg_sd_rd, dbg_mounted};
-
-reg [5:0] dbg_sync0;
-reg [5:0] dbg_sync1;
-
-always @(posedge clk_pix, negedge pix_rst_n) begin
-  if (!pix_rst_n) begin
-    dbg_sync0 <= 6'd0;
-    dbg_sync1 <= 6'd0;
-  end else begin
-    dbg_sync0 <= dbg_bus;
-    dbg_sync1 <= dbg_sync0;
-  end
-end
-
-wire d_mounted = dbg_sync1[0];
-wire d_sd_rd   = dbg_sync1[1];
-wire d_sd_data = dbg_sync1[2];
-wire d_fifo    = dbg_sync1[3];
-wire d_write   = dbg_sync1[4];
-wire d_error   = dbg_sync1[5];
-
-// priority-encoded stage colour (furthest stage reached wins; error overrides)
-reg [5:0] dbg_r;
-reg [5:0] dbg_g;
-reg [5:0] dbg_b;
-
-always @* begin
-  if      (d_error)   begin dbg_r = 6'd63; dbg_g = 6'd0;  dbg_b = 6'd0;  end // red
-  else if (d_write)   begin dbg_r = 6'd0;  dbg_g = 6'd63; dbg_b = 6'd0;  end // green
-  else if (d_fifo)    begin dbg_r = 6'd63; dbg_g = 6'd63; dbg_b = 6'd0;  end // yellow
-  else if (d_sd_data) begin dbg_r = 6'd63; dbg_g = 6'd24; dbg_b = 6'd0;  end // orange
-  else if (d_sd_rd)   begin dbg_r = 6'd0;  dbg_g = 6'd48; dbg_b = 6'd48; end // cyan
-  else                begin dbg_r = 6'd40; dbg_g = 6'd0;  dbg_b = 6'd40; end // purple
-end
-
-// override the background with the stage colour only after a mount, and only
-// in the visible area (blanking stays black so osd's sync handling is intact).
-wire vid_active = ~vid_hblank;
-wire dbg_paint  = DEBUG_SD && d_mounted && vid_active;
-
-wire [5:0] osd_r_in = dbg_paint ? dbg_r : vid_r;
-wire [5:0] osd_g_in = dbg_paint ? dbg_g : vid_g;
-wire [5:0] osd_b_in = dbg_paint ? dbg_b : vid_b;
+// background select: plasma (gated to the active area) when the visualizer is
+// enabled, else video_gen's flat colour (already blanked internally).
+wire [5:0] osd_r_in = vis_enable ? (vid_active_d ? plasma_r : 6'd0) : vid_r;
+wire [5:0] osd_g_in = vis_enable ? (vid_active_d ? plasma_g : 6'd0) : vid_g;
+wire [5:0] osd_b_in = vis_enable ? (vid_active_d ? plasma_b : 6'd0) : vid_b;
 
 
 osd #(

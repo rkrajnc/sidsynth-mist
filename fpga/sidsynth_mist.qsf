@@ -33,15 +33,11 @@ set_global_assignment -name SMART_RECOMPILE ON
 set_global_assignment -name SYNTH_TIMING_DRIVEN_SYNTHESIS ON
 set_global_assignment -name AUTO_RAM_RECOGNITION ON
 set_global_assignment -name AUTO_ROM_RECOGNITION ON
-# Physical-synthesis options. These were OFF during native Quartus 13.0sp1
-# bring-up because they were inherited from minimig-mist production tuning
-# and hung the fitter on the initial sid_core integration build. Quartus
-# 13.1 inside Docker handles them cleanly, and we need COMBO_LOGIC +
-# REGISTER_RETIMING + OPTIMIZE_MULTI_CORNER_TIMING (above) to close the
-# slow-corner timing on the sid_filter signed-multiply paths after the
-# dc_blocker integration grew the design ~5% (3940 -> 4001 LE).
+# Physical-synthesis options. COMBO_LOGIC + REGISTER_RETIMING (with
+# OPTIMIZE_MULTI_CORNER_TIMING above) close slow-corner timing on the
+# sid_filter signed-multiply paths under Docker-hosted Quartus 13.1.
 # REGISTER_DUPLICATION and ASYNCHRONOUS_SIGNAL_PIPELINING stay OFF -- not
-# needed for current closure, and they expand the register count more.
+# needed and they expand the register count.
 set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC ON
 set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION OFF
 set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING ON
@@ -97,13 +93,10 @@ set_location_assignment PIN_119 -to VGA_HS
 # audio (1-bit sigma-delta into external RC)
 set_location_assignment PIN_65  -to AUDIO_L
 set_location_assignment PIN_80  -to AUDIO_R
-# Bump drive strength on the audio pins to max 3.3-V LVTTL on Cyclone III
-# (= 8 mA -- LVTTL on this family doesn't support 12/16/24 mA) plus fast
-# slew. The MiST 560-ohm first-stage LPF draws ~5.9 mA worst-case at PDM
-# transitions; if Quartus default was the lower 4 mA option, the pin
-# couldn't swing fully and the output would be reduced + asymmetric. 8 mA
-# + fast slew is the maximum Cyclone III lets us do here without changing
-# the I/O standard.
+# Drive audio pins at max 3.3-V LVTTL (8 mA) plus fast slew. The MiST
+# 560-ohm first-stage LPF draws ~5.9 mA worst-case at PDM transitions, so
+# the lower 4 mA option would swing short and asymmetric. This is the most
+# Cyclone III allows without changing the I/O standard.
 set_instance_assignment -name CURRENT_STRENGTH_NEW "8MA" -to AUDIO_L
 set_instance_assignment -name CURRENT_STRENGTH_NEW "8MA" -to AUDIO_R
 set_instance_assignment -name SLEW_RATE 2 -to AUDIO_L
@@ -161,9 +154,8 @@ set_location_assignment PIN_43  -to SDRAM_CLK
 
 
 #### source files ####
-# All HDL sources + search paths live in sidsynth_mist.qip (paths there are
-# resolved relative to the .qip via $::quartus(qip_path), i.e. relative to
-# fpga/). Edit that file to add/remove sources.
+# All HDL sources + search paths live in sidsynth_mist.qip (paths there
+# resolve relative to fpga/). Edit that file to add/remove sources.
 set_global_assignment -name QIP_FILE sidsynth_mist.qip
 
 

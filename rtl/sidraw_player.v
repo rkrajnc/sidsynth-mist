@@ -1,12 +1,7 @@
 // sidraw_player.v
-// .sidraw stream parser: consumes a byte stream conforming to the v1
-// .sidraw format (see doc/PLANNING.md), emits SID register-bus writes
-// with tick-accurate timing.
-//
-// Bit-accurate to modules/sidraw_player/sw/sidraw_player_model.py. Each
-// FSM state in this RTL mirrors a state in the Python model; cocotb
-// compares emitted SID writes against the model's output for the same
-// byte buffer.
+// .sidraw stream parser: consumes a v1 .sidraw byte stream (see
+// doc/PLANNING.md) and emits SID register-bus writes with tick-accurate
+// timing. Bit-accurate to sw/sidraw_player_model.py.
 //
 // 2026, Rok Krajnc <rok.krajnc@gmail.com>
 
@@ -115,10 +110,7 @@ always @(posedge clk, negedge rst_n) begin
     sid_we <= 1'b0;
 
     // A (re)start preempts playback from byte 0 regardless of state, so a
-    // newly mounted file cleanly cancels whatever is currently playing. The
-    // SD reader flushes its FIFO and pulses start on img_mounted, so the
-    // header is re-read from a fresh stream. done/error/sid_cs/sid_we keep
-    // their pulse defaults (low) this cycle -- no spurious write or EOF.
+    // newly mounted file cleanly cancels whatever is currently playing.
     if (start) begin
       state      <= ST_READ_HEADER;
       hdr_cnt    <= 5'd0;
