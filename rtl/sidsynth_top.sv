@@ -131,7 +131,7 @@ assign pix_rst_n = pix_rst_sync[2];
 // status[2]/status[1]): T2 flips play/stop, T1 full-resets the sys_clk domain.
 // 'O3' (SID model: status[3], 6581/8580) and 'O4' (Visualizer: status[4],
 // plasma on/off) are persistent level options. See modules/top/CLAUDE.md.
-localparam CONF_STR = "SIDSYNTH;;S0,SID,Load tune;T2,Toggle playing;O3,SID model,6581,8580;O4,Visualizer,On,Off;T1,Restart;V,SIDSYNTH v_0_4";
+localparam CONF_STR = "SIDSYNTH;;S0,SID,Load tune;T2,Toggle playing;O3,SID model,6581,8580;O4,Visualizer,On,Off;T1,Restart;V,SIDSYNTH v_0_5";
 
 wire [63:0] uio_status;
 wire        uio_sdo;          // user_io SPI MISO
